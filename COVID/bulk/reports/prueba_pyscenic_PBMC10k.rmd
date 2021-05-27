@@ -1,0 +1,276 @@
+---
+title: "PulmonDB - COVID19. Prueba pyscenic. PBMC10k dataset"
+author: "Monica Padilla"
+date: "April, 2021"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+---
+
+\
+
+This is the tutorial described in [A scalable SCENIC workflow for single-cell gene regulatory network analysis](https://www.nature.com/articles/s41596-020-0336-2). Also in a more extended version in a [jupyter notebook](https://github.com/aertslab/SCENICprotocol/blob/master/notebooks/PBMC10k_SCENIC-protocol-CLI.ipynb).
+
+Python version : 3.8.5, pyscenic requires >= 3.6
+
+\
+
+Make session on screen:
+
+```{bash eval=FALSE}
+ssh -Y mpadilla@dna.liigh.unam.mx
+screen -S wolfpsync
+qlogin
+```
+
+Ananconda environment:
+
+```{bash eval=FALSE}
+module load anaconda3/4.2.0 
+source activate scanpy
+```
+
+Make dirs:
+
+```{bash eval=FALSE}
+cd /mnt/Citosina/amedina/mpadilla/COVID19/
+umask 2
+mkdir pyscenic 
+mkdir pyscenic/demo
+mkdir pyscenic/demo/data
+```
+
+Auxiliary datasets:
+
+```{bash eval=FALSE}
+# Transcription factors :
+ln -s /mnt/Citosina/amedina/larteaga/tutoPyScenic/hs_hgnc_tfs.txt hs_hgnc_tfs.txt
+# motif to TF annotation database:
+ln -s /mnt/Citosina/amedina/larteaga/tutoPyScenic/motifs-v9-nr.hgnc-m0.001-o0.0.tbl
+# genome ranking database:
+ln -s /mnt/Citosina/amedina/larteaga/tutoPyScenic/hg38__refseq-r80__10kb_up_and_down_tss.mc9nr.feather hg38__refseq-r80__10kb_up_and_down_tss.mc9nr.feather
+```
+
+
+* [used TFs](https://raw.githubusercontent.com/aertslab/pySCENIC/master/resources/hs_hgnc_tfs.txt)
+* [motifs db](https://resources.aertslab.org/cistarget/motif2tf/motifs-v9-nr.hgnc-m0.001-o0.0.tbl)
+* [genome ranking db](https://resources.aertslab.org/cistarget/databases/homo_sapiens/hg38/refseq_r80/mc9nr/ gene_based/hg38__refseq-r80__10kb_up_and_down_tss.mc9nr.feather)
+
+\
+
+***
+
+## **TUTORIAL**
+
+#### **Pre-processing** (15 min)
+
+1. Download data 
+
+```{bash eval=FALSE}
+wget http://cf.10xgenomics.com/samples/cell-exp/3.0.0/pbmc_10k_v3/pbmc_10k_v3_filtered_fea ture_bc_matrix.tar.gz
+tar xvf pbmc_10k_v3_filtered_feature_bc_matrix.tar.gz
+
+python
+```
+
+\
+
+2. Cleaning and quality control
+
+```{python eval=FALSE}
+import scanpy as sc
+import numpy as np
+adata = sc.read_10x_mtx('filtered_feature_bc_matrix/', var_names='gene_symbols') 
+adata.var_names_make_unique()
+# compute the number of genes per cell (computes ‘n_genes' column) 
+sc.pp.filter_cells(adata, min_genes=0) 
+# mito and genes/counts cuts 
+mito_genes = adata.var_names.str.startswith('MT-') 
+# for each cell compute fraction of counts in mito genes vs. all genes 
+adata.obs['percent_mito'] = np.ravel(np.sum( adata[:, mito_genes].X, axis=1)) / np.ravel(np.sum(adata.X, axis=1))
+# add the total counts per cell as observations-annotation to adata 
+adata.obs['n_counts'] = np.ravel(adata.X.sum(axis=1))
+```
+
+
+\
+
+3. Carry out the filtering steps with basic thresholds for genes and cells:
+
+```{python eval=FALSE}
+sc.pp.filter_cells(adata, min_genes=200) 
+sc.pp.filter_genes(adata, min_cells=3) 
+adata = adata[adata.obs['n_genes'] < 4000, :] 
+adata = adata[adata.obs['percent_mito'] < 0.15, :]
+```
+
+
+\
+
+4. Create a loom file with the filtered data, to be used in downstream analyses:
+
+```{python eval=FALSE}
+import loompy as lp 
+row_attrs = { "Gene": np.array(adata.var_names), }
+col_attrs = { "CellID": np.array(adata.obs_names), "nGene": np.array(np.sum(adata.X.transpose()>0, axis=0)).flatten(), "nUMI": np.array(np.sum(adata.X.transpose(),axis=0)).flatten(), }
+lp.create("PBMC10k_filtered.loom",adata.X.transpose(),row_attrs, col_attrs)
+```
+
+Output filtered file : `PBMC10k_filtered.loom`.
+
+```{python eval=FALSE}
+quit()
+# see file
+# require loom-viewer
+```
+
+More on [loom files](http://loompy.org/).
+
+\
+
+#### **Network Inference** (95 min)
+
+```{bash eval=FALSE}
+mkdir ../coexpr_net
+cd ../coexpr_net
+```
+
+5. Run the GRNBoost2 network inference algorithm from the CLI:
+
+```{python eval=FALSE}
+# pyscenic grn --num_workers 20 \
+# --output adj.tsv \
+# --method grnboost2 \
+# PBMC10k_filtered.loom \
+# hs_hgnc_tfs.txt
+```
+
+
+**IMPORTANT!**   We are going to use `arboreto_with_multiprocessing.py` as described [here](https://pyscenic.readthedocs.io/en/latest/faq.html#i-am-having-problems-with-dask) instead of the code above.
+
+
+```{bash eval=FALSE}
+arboreto_with_multiprocessing.py \
+../data/PBMC10k_filtered.loom \
+../resources/hs_hgnc_tfs.txt \
+--method grnboost2 \
+--output adj.tsv \
+--num_workers 20
+## there is no seed >:c
+```
+
+Output file: `adj.tsv`
+
+Contains table :
+      * one TF - target gene (putative) interaction per row 
+      * plus importance measure derived from regression model (which predicts the expression of this gene across cells from the expression of the predefined tf)
+
+\
+
+#### **Candidate regulon generation and regulon prediction** (8 min)
+
+6.  
+
+```{bash eval=FALSE}
+mkdir reg
+
+pyscenic ctx \
+../coexpr_net/adj2.tsv \
+../resources/hg38__refseq-r80__10kb_up_and_down_tss.mc9nr.feather \
+--annotations_fname ../resources/motifs-v9-nr.hgnc-m0.001-o0.0.tbl \
+--expression_mtx_fname ../data/PBMC10k_filtered2.loom \
+--mode "dask_multiprocessing" \
+--output reg2.csv \
+--num_workers 20 \
+--mask_dropouts
+```
+
+\
+
+#### **Cellular enrichment** (1.7 min)
+
+7. 
+
+```{python eval=FALSE}
+pyscenic aucell \
+../data/PBMC10k_filtered.loom \
+reg.csv \
+--output PBMC10k_SCENIC.loom \
+--num_workers 20
+```
+
+```{python eval=FALSE}
+pyscenic aucell \
+../data/PBMC10k_filtered2.loom \
+reg2.csv \
+--output PBMC10k_SCENIC2.loom \
+--num_workers 20
+```
+
+\
+
+#### **Nonlinear projection and clustering** (variable time)
+
+8. 
+
+```{python eval=FALSE}
+import loompy as lp 
+import umap #from MulticoreTSNE
+import MulticoreTSNE as TSNE
+import pandas as pd
+lf = lp.connect("PBMC10k_SCENIC.loom", mode='r+', validate=False) 
+auc_mtx = pd.DataFrame(lf.ca.RegulonsAUC, index=lf.ca.CellID) 
+lf.close() 
+# UMAP 
+runUmap = umap.UMAP(n_neighbors=10, min_dist=0.4, metric='correlation').fit_transform
+dr_umap = runUmap(auc_mtx) 
+# tSNE 
+tsne = TSNE(n_jobs=20) 
+dr_tsne = tsne.fit_transform(auc_mtx)
+```
+
+2
+
+```{python eval=FALSE}
+import loompy as lp 
+import umap #from MulticoreTSNE
+import MulticoreTSNE as TSNE
+import pandas as pd
+lf2 = lp.connect("PBMC10k_SCENIC2.loom", mode='r+', validate=False) 
+auc_mtx = pd.DataFrame(lf.ca.RegulonsAUC, index=lf.ca.CellID) 
+lf.close() 
+# UMAP 
+runUmap = umap.UMAP(n_neighbors=10, min_dist=0.4, metric='correlation').fit_transform
+dr_umap = runUmap(auc_mtx) 
+# tSNE 
+tsne = TSNE(n_jobs=20) 
+dr_tsne = tsne.fit_transform(auc_mtx)
+```
+
+
+\
+
+#### **Nonlinear projection and clustering** (variable time)
+
+8. 
+
+```{python eval=FALSE}
+```
+
+
+
+
+
+
+
+#### **References** 
+
+Van de Sande, B., Flerin, C., Davie, K., De Waegeneer, M., Hulselmans, G., Aibar, S., ... & Aerts, S. (2020). A scalable SCENIC workflow for single-cell gene regulatory network analysis. Nature Protocols, 15(7), 2247-2276.
+
+
+
+**Tool to see loom files:**
+
+https://github.com/linnarsson-lab/loom-viewer
