@@ -802,7 +802,7 @@ ravgsd01_IAV_infected_4_month_old_Ferret.po169746
 Because the experiment dir name was missing, and to join all files with avglen and sd reads length info, I did:
 
 ```{r eval=FALSE}
-for exp in *; do perl -pe 's/^./'$exp'/' $exp/$exp-reads_avgsdlen.tsv; done > samples_reads_avgsdlen.tsv
+for exp in *; do perl -pe 's/^./'$exp'/' $exp/$exp-reads_avgsdlen.tsv; done > samples_reads_avgsdlen2.tsv
 ```
 
 e.g :
@@ -882,7 +882,7 @@ grep -v "Ferret" ../trimmed2/samples_reads_avgsdlen.tsv | perl -pe 's/(.*)\t(.*)
 For Ferret samples:
 
 ```{r eval=FALSE}
-grep "Ferret" ../trimmed2/samples_reads_avgsdlen.tsv | perl -pe 's/(.*)\t(.*)\t(.*)/kallisto quant -i \/mnt\/Citosina\/amedina\/mpadilla\/resources\/kallisto\/index_kallisto45_ensemblv102_mputoriusf_cdna -o $1\/ --single -l $2 -s $3 \/mnt\/Citosina\/amedina\/mpadilla\/COVID19\/Data\/trimmed2\/$1\/*.fastq.gz/' > ferret_kallisto_quant.sge
+grep "Ferret" ../trimmed2/samples_reads_avgsdlen2.tsv | perl -pe 's/(.*)\t(.*)\t(.*)/kallisto quant -i \/mnt\/Citosina\/amedina\/mpadilla\/resources\/kallisto\/index_kallisto45_ensemblv102_mputoriusf_cdna -o $1\/ --single -l $2 -s $3 \/mnt\/Citosina\/amedina\/mpadilla\/COVID19\/Data\/trimmed2\/$1\/*.fastq.gz/' > ferret_kallisto_quant.sge
 ```
 
 
@@ -923,11 +923,45 @@ Output: `COVID19/Data/counts/experiment/sample/`:
 abundance.h5  abundance.tsv  run_info.json
 ```
 
+* `abundances.h5` is a HDF5 binary file containing run info, abundance esimates, bootstrap estimates, and transcript length information length.
+* `abundances.tsv` is a plaintext file of the abundance estimates. It does not contains bootstrap estimates. The first line contains a header for each column, including estimated counts, TPM, effective length.
+
+    + `target_id` = ensembl transcript id
+    + `length` 
+    + `eff_length` = effective length
+    + `est_counts` = estimated counts
+    + `tpm` = Transcripts per million (TPM) is a measurement of the proportion of transcripts in your pool of RNA.
+
+* `run_info.json` is a json file containing information about the run. We can facilitate further work by saving this files in a dir with the SRA ID name.
+
 ***
 
 \
 
+### **metadata**
 
+Filter metadata to upload a more legible version in drive:
+
+```{bash eval=FALSE}
+cd mpadilla/COVID19/Data/metadata/
+# sample info bio-relevant data
+cut -d, -f24,27,28,30,32,33,36,37,38 SraRunTable_datosDaniel.txt > inter-files/SraRunTable_datosDaniel_subset.csv
+cd inter-files/
+# Take samples one per repetition
+{ uniq -u SraRunTable_datosDaniel_subset.csv & uniq -d SraRunTable_datosDaniel_subset.csv; } > SraRunTable_datosDaniel_subset_norep.csv
+# tables for human and ferret data
+grep "Homo sapiens" SraRunTable_datosDaniel_subset_norep.csv > SraRunTable_datosDaniel_subset_norep_hsapiens.csv 
+grep "Mustela puto" SraRunTable_datosDaniel_subset_norep.csv > SraRunTable_datosDaniel_subset_norep_mputoriusf.csv
+```
+
+
+Explore samples data:
+
+[Excel Data Table](https://docs.google.com/spreadsheets/d/1YvTk8YFC5W5Ro_upBwhQdld1g_YgNCwwFs9t9nBx0HA/edit?usp=sharing)
+
+\
+
+_Last update: Ma 24th, 2021_
 
 \
 
