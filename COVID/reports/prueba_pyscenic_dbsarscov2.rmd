@@ -1,0 +1,507 @@
+---
+title: "PulmonDB - COVID19. Prueba pyscenic. Bulk data: SARS-CoV-2_infected_A549"
+author: "Monica Padilla"
+output:
+  html_document
+---
+
+
+## **Prueba de pyscenic con datos de experimento de infección de SARS-CoV-2 en línea celular A549** {.tabset}
+
+etw
+
+
+\
+
+### **Intro** 
+
+This is a first attempt to use the `pyscenic`[1](ref pyscenic) pipeline in a part of Daniel Blanco's rna-seq data [2](DB paper). I'm going to use : `SARS-CoV-2_infected_A549/GSM4432387/`, a sample of the experiment where they infected A549 cells ( adenocarcinomic human alveolar basal epithelial cells) with SARS-CoV-2.
+
+I will use as a guide `prueba_pyscenic_PBMC10k.rmd`[1](ref scenic)
+
+
+\
+
+### **Prepare terminal**
+
+```{bash eval=FALSE}
+ssh -Y mpadilla@dna.liigh.unam.mx
+screen -S pyscenic
+qlogin
+cd /mnt/Citosina/amedina/mpadilla/COVID19/Data/counts2/SARS-CoV-2_infected_A549/
+module unload r/3.2.1
+module load r/4.0.2
+umask 2
+```
+
+\
+\
+
+
+***
+
+### **Make Experiment Counts Matrixes**
+
+**Convert Kallisto Quant Counts Matrixes into GENIE3/GRNBOOST2 input**
+
+I used the ensembl v103 transcriptome reference as index for `kalllisto quant`, so now I have to change ensembl id names for gene names, for them to match with pyscenics's transcription factors list posterior analysis.
+
+Make table of samples x genes, for a given experiment. 
+
+  + This table has samples as rows and genes as columns
+  + genes names where taken from ensembl, transcript_id_version was used when an external_gene_name was not found
+  + the table contains gene counts (in a given sample, a given gene was counted n times)
+    + the metric chosen was TPM since it is normalized for transcript length
+
+![](img/Experiment_counts_matrix.png)
+
+[4](biorender)
+
+\
+
+The code below does this and is separated in 4 functions (description in code):
+
+1. JoinSamplesCountsMatrixes
+2. Id2GeneName
+3. FormatExpCountsMatrix
+4. MakeExpCountsMatrix
+
+```{r eval=FALSE}
+R
+
+#################################################################################################
+## Function: Join counts matrixes from several samples (rna-seq kallisto quant runs)
+##           Output: Data frame. Experiments count matrix
+##                  Format: Cols : target_id, sample1_counts, ..., sampleN_counts
+##                  count type: tpm
+
+JoinSamplesCountsMatrixes <- function(files, counts_col = 5){
+  
+    library(stringr)
+    i = 1
+    
+    for (file in files) {
+      ## Get id and tpm columns from counts file
+      counts_file = as.data.frame(read.csv(file = file, header = TRUE, sep = "\t"))
+      sample_name = str_extract(file, "GSM\\d*")
+      colnames(counts_file)[counts_col] = sample_name # replace counts_col for name of sample
+      
+      ## Sort table by transcript id
+      sort_index = match(sort(counts_file[,1]), counts_file[,1])
+      counts_file = counts_file[sort_index,]
+      # Note: ids are not repited
+      
+      ## Add new counts to experiment counts table
+      if (i == 1){
+        # first counts table
+        exp_counts = counts_file[,c("target_id", sample_name)]
+        i = i+1
+      } else {
+        # 2-n counts table
+        if ( length(exp_counts$target_id[exp_counts$target_id == counts_file$target_id]) ){
+          # same transcripts
+          exp_counts[,sample_name] = counts_file[,sample_name]
+        } else {
+          # add new transcripts
+          new_transcripts = setdiff(counts_file$target_id, exp_counts$target_id)
+          append(exp_counts$target_id, new_transcripts, after = length(exp_counts$target_id))
+          
+          # sort exp_counts by target_id again
+          sort_index = match(sort(exp_counts[,1]), exp_counts[,1])
+          exp_counts = exp_counts[sort_index,]
+          
+          # add counts
+          exp_counts[,sample_name] = counts_file[,sample_name]
+        }
+      } # else 2-n table
+    } # for file
+    
+    return(exp_counts)
+}
+
+
+#################################################################################################
+## Function: Convert transcript ids (w/ version) to gene_names with ensemblv103
+
+Id2GeneName <- function(ensembl_ids){
+  
+    # Use biomart package from Bioconductor
+    library(biomaRt)
+    
+    mart = useMart(biomart="ENSEMBL_MART_ENSEMBL", 
+                    dataset = "hsapiens_gene_ensembl",
+                    host = "https://feb2021.archive.ensembl.org") # v 103
+    
+    # Create a query and send it to biomart server, takes 1 min
+    res = getBM(attributes = c('ensembl_transcript_id_version',
+                                'external_gene_name'),
+                 filters = 'ensembl_transcript_id_version', 
+                 values = ensembl_ids,
+                 mart = mart)
+    
+    # Sort results (transcript id and gene name df) by transcript_id
+    sort_index = match(sort(res$ensembl_transcript_id_version),res$ensembl_transcript_id_version)
+    res = res[sort_index,]
+    # Note: several transcripts can correspond to the same gene
+    
+    return(res)
+}
+
+
+#################################################################################################
+## Function: Replace target_ids for gene_names in experiment counts matrix
+##          Output: Experiment counts matrix 
+##                  Format: df: samples (rows) x genes (columns) 
+
+FormatExpCountsMatrix <- function(exp_counts, res, transposed = T){
+  
+    library(dplyr)
+ 
+    # Index of ids for which an external_gene_name was found
+    index_genenames = match(res$ensembl_transcript_id_version, exp_counts$target_id)
+    # Add gene names where it was found
+    exp_counts[index_genenames, "external_gene_name"] = res$external_gene_name
+    # Replace na's in gene_name col with ensembl_ids
+    exp_counts$external_gene_name[-index_genenames] = exp_counts$target_id[-index_genenames]
+    
+    
+    # Make new experiments counts matrix: samples (rows) x gene names (columns)
+    if(transposed){
+      only_counts = exp_counts %>% select_if(is.numeric)
+      exp_counts_t = as.data.frame(t(as.matrix( only_counts )))
+      colnames(exp_counts_t) = exp_counts$external_gene_name
+    } else {
+      exp_counts_t = exp_counts %>% relocate(external_gene_name, .before = target_id)
+      exp_counts_t = exp_counts_t[,-2]
+    }
+    
+    return(exp_counts_t)
+}
+
+#################################################################################################
+## Function: Join the actions of the functions before 
+##            to make a single matrix joining the gene counts of several samples
+##            coming from a single experiment and output that to csv
+
+MakeExpCountsMatrix <- function(files, outfile_name = "experiment_counts.csv", transposed = T){
+  
+    # 1. Join counts matrixes from all biological replicates/ samples
+    exp_counts = JoinSamplesCountsMatrixes(files)
+    
+    # 2. Get conversion of transcript ids to gene_names
+    ensembl_ids = as.array(exp_counts[, "target_id"]) # transcript_ids from all samples
+    id_gene_df =  Id2GeneName(ensembl_ids)
+    
+    # 3. Adjust format of experiment matrix: samples x genes
+    exp_counts_t = FormatExpCountsMatrix(exp_counts = exp_counts, res = id_gene_df, transposed = transposed)
+    
+    # output experiment counts matrix
+    if(transposed){
+      write.table(x = exp_counts_t, file = outfile_name, sep = ",", eol = "\n", na = "NA", row.names = T, col.names = T, quote = F)
+    } else {
+      write.table(x = exp_counts_t, file = outfile_name, sep = ",", eol = "\n", na = "NA", row.names = F, col.names = T, quote = F)
+    }
+}
+
+## Run code above only for experiment: SARS-CoV-2_infected_A549
+files = c("GSM4432387/abundance.tsv", "GSM4432388/abundance.tsv", "GSM4432389/abundance.tsv",
+          "GSM4462339/abundance.tsv", "GSM4462340/abundance.tsv", "GSM4462341/abundance.tsv")
+MakeExpCountsMatrix(files = files, outfile_name = "SARS-CoV-2_infected_A549-counts.csv") # for grnboost2 input
+MakeExpCountsMatrix(files = files, outfile_name = "SARS-CoV-2_infected_A549-counts-genie3.csv", transposed = F) # for genie3 input
+
+quit()
+y
+
+head(exp_counts_t)[1:4]
+```
+
+Example of output matrix:
+
+```
+               ARF5    M6PR    ESRRA   FKBP4
+GSM4432387 101.0470 111.607 12.25140 70.2310
+GSM4432388 108.9660 100.983 15.54640 77.4378
+GSM4432389 122.5220 114.189 22.56570 84.2131
+GSM4462339  66.0636 109.169  9.37089 39.4358
+GSM4462340  87.2772 109.837 11.08310 33.8674
+GSM4462341  78.9091 100.710 10.19030 31.6239
+```
+
+\
+
+
+To make the count matrixes for all experiments:
+
+```{r eval=FALSE}
+cd .. # in bash
+
+## Run code above for all experiments in COVID19/Data/counts2/
+for(experiment_dir in dir( path = ".",include.dirs = T)){
+  
+  # skip if SARS-CoV-2_infected_A549 or jobs dirs
+  if(experiment_dir == "jobs" || experiment_dir=="SARS-CoV-2_infected_A549") next
+  
+  # list all counts files in files
+  files = c()
+  for(sample_dir in dir(experiment_dir)){
+    files = append(files, paste(sample_dir, "abundance.tsv", sep = "/"), after = length(files))
+  }
+  
+  # run code
+  MakeExpCountsMatrix(files = files, outfile_name = paste(experiment_dir,"counts.csv",sep = "-") )
+}
+```
+
+\
+
+```{r eval=FALSE}
+sessionInfo()
+```
+
+```
+R version 4.0.2 (2020-06-22)
+Platform: x86_64-pc-linux-gnu (64-bit)
+Running under: CentOS Linux 7 (Core)
+
+Matrix products: default
+BLAS:   /cm/shared/apps/r/4.0.2-studio/lib64/R/lib/libRblas.so
+LAPACK: /cm/shared/apps/r/4.0.2-studio/lib64/R/lib/libRlapack.so
+
+locale:
+ [1] LC_CTYPE=en_US.UTF-8       LC_NUMERIC=C              
+ [3] LC_TIME=en_US.UTF-8        LC_COLLATE=C              
+ [5] LC_MONETARY=en_US.UTF-8    LC_MESSAGES=en_US.UTF-8   
+ [7] LC_PAPER=en_US.UTF-8       LC_NAME=C                 
+ [9] LC_ADDRESS=C               LC_TELEPHONE=C            
+[11] LC_MEASUREMENT=en_US.UTF-8 LC_IDENTIFICATION=C       
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base     
+
+loaded via a namespace (and not attached):
+[1] compiler_4.0.2
+```
+
+\
+
+***
+
+### **Pyscenic Pipeline**
+
+Ananconda environment:
+
+```{bash eval=FALSE}
+module load anaconda3/4.2.0 
+source activate scanpy
+```
+
+\
+
+#### **Infer modules based on coexpression:**
+
+The `GENIE3` program for this step was initially done for bulk RNA-seq data, so it might be convenient to use it instead of `grnboost2`, which is now standard in the pipeline but that was redesigned (inspired in `GENIE3` algorithm) for scRNA-seq, which makes it more efficient since this type of data can be much bigger (thousand of cells vs few samples).
+
+To test both, I will run them with the same seed `777` and compare the output tf-target interaction file `adj.tsv`.
+
+cwd = `/mnt/Citosina/amedina/mpadilla/COVID19/Data/counts2/SARS-CoV-2_infected_A549`
+
+\
+
+**GRNBOOST2**
+
+Running time: 1hr 17 min
+
+```{bash eval=FALSE}
+arboreto_with_multiprocessing.py \
+./SARS-CoV-2_infected_A549-counts.csv \
+/mnt/Citosina/amedina/mpadilla/COVID19/pyscenic/demo/resources/hs_hgnc_tfs.txt \
+--method grnboost2 \
+--output adj-gb2.tsv \
+--num_workers 20 \
+--seed 777
+```
+
+```
+/cm/shared/apps/anaconda3/4.2.0/envs/scanpy/lib/python3.8/site-packages/numba/np/ufunc/parallel.py:355: NumbaWarning: The TBB threading layer requires TBB version 2019.5 or later i.e., TBB_INTERFACE_VERSION >= 11005. Found TBB_INTERFACE_VERSION = 6103. The TBB threading layer is disabled.
+  warnings.warn(problem)
+Loaded expression matrix of 6 cells and 194360 genes in 12.264241456985474 seconds...
+Loaded 1839 TFs...
+/cm/shared/apps/anaconda3/4.2.0/envs/scanpy/lib/python3.8/site-packages/arboreto/algo.py:214: FutureWarning: Method .as_matrix will be removed in a future version. Use .values instead.
+  expression_matrix = expression_data.as_matrix()
+starting grnboost2 using 20 processes...
+100%|██████████████████████████████████████████████████████████| 194360/194360 [1:14:15<00:00, 43.62it/s]
+Done in 4513.783680438995 seconds.
+```
+
+**GENIE3**
+
+Running time: (a lot)
+
+Note: although genie3 input is genes(rows) x samples(cols), when running it with arboreto it should be transposed
+
+```{bash eval=FALSE}
+arboreto_with_multiprocessing.py \
+./SARS-CoV-2_infected_A549-counts.csv \
+/mnt/Citosina/amedina/mpadilla/COVID19/pyscenic/demo/resources/hs_hgnc_tfs.txt \
+--method genie3 \
+--output adj-g3.tsv \
+--num_workers 20 \
+--seed 777
+```
+
+
+##### **Compare adjencies/output files**
+
+```{bash eval=FALSE}
+{ wc adj-gb2.tsv & wc adj-g3.tsv; }
+diff -s adj-gb2.tsv adj-g3.tsv ## check if files are identical
+sort adj-gb2.tsv > adj-gb2-sort.tsv
+sort adj-g3.tsv > adj-g3-sort.tsv
+diff -s adj-gb2-sort.tsv adj-g3-sort.tsv ## check if files are identical
+cut -f1-2 adj-gb2-sort.tsv > adj-gb2-sort-nimp.tsv
+cut -f1-2 adj-g3-sort.tsv > adj-g3-sort-nimp.tsv  
+diff -s adj-gb2-sort-nimp.tsv adj-g3-sort-nimp.tsv ## check if files are identical
+```
+
+\
+
+***
+\
+
+
+#### **Refine modules into regulons**
+
+Running time: 1 hr 3 min
+
+```{bash eval=FALSE}
+pyscenic ctx \
+./adj-gb2.tsv \
+/mnt/Citosina/amedina/mpadilla/COVID19/pyscenic/demo/resources/hg38__refseq-r80__10kb_up_and_down_tss.mc9nr.feather \
+--annotations_fname /mnt/Citosina/amedina/mpadilla/COVID19/pyscenic/demo/resources/motifs-v9-nr.hgnc-m0.001-o0.0.tbl \
+--expression_mtx_fname ./SARS-CoV-2_infected_A549-counts.csv \
+--mode "dask_multiprocessing" \
+--output reg-gb2.csv \
+--num_workers 20 \
+--mask_dropouts
+```
+
+\
+
+***
+\
+
+#### **Cellular --> Sample enrichment** (1.7 min)
+
+Again a seed `777` was set for reproducibility.
+
+```{bash eval=FALSE}
+pyscenic aucell \
+./SARS-CoV-2_infected_A549-counts.csv \
+reg-gb2.csv \
+--output SARS-CoV-2_infected_A549-gb2-pyscenic.loom \
+--num_workers 20 \
+--seed 777
+```
+
+```
+/cm/shared/apps/anaconda3/4.2.0/envs/scanpy/lib/python3.8/site-packages/numba/np/ufunc/parallel.py:355: NumbaWarning: The TBB threading layer requires TBB version 2019.5 or later i.e., TBB_INTERFACE_VERSION >= 11005. Found TBB_INTERFACE_VERSION = 6103. The TBB threading layer is disabled.
+  warnings.warn(problem)
+
+2021-05-27 13:44:08,439 - pyscenic.cli.pyscenic - INFO - Loading expression matrix.
+
+2021-05-27 13:44:20,562 - pyscenic.cli.pyscenic - INFO - Loading gene signatures.
+Create regulons from a dataframe of enriched features.
+Additional columns saved: []
+
+2021-05-27 13:44:20,762 - pyscenic.cli.pyscenic - INFO - Calculating cellular enrichment.
+
+
+```
+
+***
+
+\
+
+**Test notes:**
+
+* Seeds will not be used in real runs (not tests)
+* GRNBOOST2 is much faster than GENIE3 even with few samples, so it is convenient to use GRNBOOST2 when running multiruns.
+* we can also use Sushmita's Roy tool for network inference intead of grnboost2
+* The set of tfs taken from pyscenic's tutorial [1] has 1839, including zinc fingers
+* We can change the list of TFs, as well as the ranking databases by creating a cisTarget db as described [here](https://pyscenic.readthedocs.io/en/latest/faq.html#can-i-create-my-own-ranking-databases) and further on [here](https://github.com/aertslab/create_cisTarget_databases) . 
+* We can input the modules from coexpression to [iRegulon](http://iregulon.aertslab.org/) to view them in Cytoscape as described [here](http://htmlpreview.github.io/?https://github.com/aertslab/SCENICprotocol/blob/master/notebooks/PBMC10k_downstream-analysis.html)
+* pyscenic by default discards negatively coexpressed interactions, but we can add them with option `-a, --all_modules` in the refining step `pyscenic ctx`, in despite that authors have reported that these modules make no sense.
+* pyscenic does not capture dynamic changes within grns, i think a Sushmita Roys tools does that
+
+
+\
+
+***
+
+\
+
+Move `pySCENIC` output files to another dir `pyscenic-test-out`:
+
+```{bash eval=FALSE}
+umask 2
+mkdir pyscenic-test-out
+mv adj* reg* SARS-CoV-2_infected_A549-gb2-pyscenic.loom pyscenic-out/
+```
+
+\
+
+
+***
+
+\
+
+### **Visualization**
+
+#### **Nonlinear projection and clustering** (variable time)
+
+```{python eval=FALSE}
+import loompy as lp 
+import umap #from MulticoreTSNE
+import MulticoreTSNE as TSNE
+import pandas as pd
+lf = lp.connect("PBMC10k_SCENIC.loom", mode='r+', validate=False) 
+auc_mtx = pd.DataFrame(lf.ca.RegulonsAUC, index=lf.ca.CellID) 
+lf.close() 
+# UMAP 
+runUmap = umap.UMAP(n_neighbors=10, min_dist=0.4, metric='correlation').fit_transform
+dr_umap = runUmap(auc_mtx) 
+# tSNE 
+tsne = TSNE(n_jobs=20) 
+dr_tsne = tsne.fit_transform(auc_mtx)
+```
+
+
+
+
+
+### **References**
+
+[1] Van de Sande, B., Flerin, C., Davie, K., De Waegeneer, M., Hulselmans, G., Aibar, S., ... & Aerts, S. (2020). A scalable SCENIC workflow for single-cell gene regulatory network analysis. Nature Protocols, 15(7), 2247-2276.
+
+[2] Blanco-Melo, D., Nilsson-Payant, B. E., Liu, W. C., Uhl, S., Hoagland, D., Møller, R., ... & Albrecht, R. A. (2020). Imbalanced host response to SARS-CoV-2 drives development of COVID-19. Cell, 181(5), 1036-1045.
+
+Images made with [bioRender](https://biorender.com/)
+
+https://github.com/aertslab/pySCENIC/issues/136
+
+\
+
+**Programs **
+
+* r/4.0.2
+
+  + dyplr
+  + stringr
+  
+* genie3
+* grnboost2
+* pyscenic
+* anaconda3/4.2.0
+* scanpy anaconda env
+
+\
