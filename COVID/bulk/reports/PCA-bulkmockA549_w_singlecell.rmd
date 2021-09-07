@@ -1,0 +1,811 @@
+---
+title: "PulmonDB - COVID19."
+date: "Sep 7th,2021"
+author: "Monica Padilla"
+output:
+  html_document:
+    theme: cosmo
+    highlight: textmate
+---
+
+\
+
+## **Multidimensional similarity (PCA) between AT2 cells (scRNA-seq) and A549 adenocarnima cell line (RNA-seq)** {.tabset}
+  
+Single cell and RNA seq data will be compared in the project. In order to know if the data is actually similar, I will explore it with PCA. Then, we can talk about the comparison of results (from single cell and bulk) provided the gene expression differences seen here.
+
+
+\
+
+### **Prepare terminal**
+
+```{bash eval=FALSE}
+ssh -Y mpadilla@dna.liigh.unam.mx
+screen -S pca
+qlogin
+cd /mnt/Citosina/amedina/mpadilla/COVID19/pca/
+module unload r/3.2.1
+module load r/4.0.2
+umask 2
+```
+
+### **Study design**
+
+\
+
+When working with expression sequencing data, it is essential to know where data variation may come from. As well variation due to biological conditions, data can also variate due to batches, e.g. groups of sequencing runs.
+
+The lines of code below just produce two files that specify the study design (samples, release dates and experimental conditions).
+
++ `dates_samples_experiments.tsv` : project study design (Daniel Blanco et al, 2020)
++ `studydesign_date_mockA549.csv` : study design for mock treated A549 cell lines
+
+\
+
+Current dir = `/mnt/Citosina/amedina/mpadilla/COVID19/Data/`
+
+**Metadata for the whole project:**
+
+```{bash eval=FALSE}
+# select release_date, sample and experiment columns from original metadata table and deal with format
+cut -d, -f26,27,28 metadata/SraRunTable_datosDaniel.txt | perl -pe 's/ /_/g' | sed '1d' | perl -pe 's/_with_a_/_w_/' | perl -pe 's/_cells//' | perl -pe 's/_after//' | perl -pe 's/\((.*)\)/$1/' | perl -pe 's/human_ACE2/hACE2/' | perl -pe 's/_trasnduced//' | perl -pe 's/,/\t/g' | sort -k 3 > metadata/inter-files/dates_samples_experiments.tsv
+
+# remove repeated lines
+uniq -u metadata/inter-files/dates_samples_experiments.tsv > metadata/inter-files/dates_samples_experiments-uu.tsv
+uniq -d metadata/inter-files/dates_samples_experiments.tsv > metadata/inter-files/dates_samples_experiments-ud.tsv
+
+# keep unique lines
+cat metadata/inter-files/dates_samples_experiments-uu.tsv metadata/inter-files/dates_samples_experiments-ud.tsv | sort -k 2 > metadata/inter-files/dates_samples_experiments.tsv
+
+# remove intermediate files
+rm metadata/inter-files/dates_samples_experiments-uu.tsv metadata/inter-files/dates_samples_experiments-ud.tsv
+```
+
+\
+
+**Subset for Mock A549 samples:**
+
+For this analysis, we are looking at the A549 cell line, which corresponds to adenocarcinomic human alveolar basal epithelial cells and have been used as a model for alveolar Type II pulmonary epithelium (AT2) cell type [4], since this cell type is also present as epithelial in single-cell data (according to authors’ annotation [1]).
+
+```{bash eval=FALSE}
+echo 'release_dates,samples,experiments' > ../pca/data/studydesign_date_mockA549.csv
+grep "Mock_treated_A549" metadata/inter-files/dates_samples_experiments.tsv | perl -pe 's/\t/,/g'>> ../pca/data/studydesign_date_mockA549.csv
+```
+
+\
+
+Generated files look something like this:
+
+```
+release_dates           samples         experiments
+2020-03-26T00:00:00Z    GSM4432384      Mock_treated_A549
+2020-03-26T00:00:00Z    GSM4432385      Mock_treated_A549
+2020-03-26T00:00:00Z    GSM4432386      Mock_treated_A549
+2020-03-26T00:00:00Z    GSM4432390      Mock_treated_A549
+```
+
+this will be useful for distinguishing between batches (`release_dates`) and biological conditions (`experiments`) in further analysis.
+
+\
+
+### **Pseudo-bulk in single cell data**
+
+\
+
+This section includes:
+
++ Single cell data retrieval
++ Pseudo-bulk data retrieval from single cell data
++ PCA visualization
+
+***
+
+\
+
+#### **Single cell data**
+
+Original data by [citation]
+
+Single cell data was taken from `/mnt/Citosina/amedina/larteaga` DNA cluster dir
+
++ `exp_mat_both.loom` : Matrix with all cells
++ `exp_mat_[control|cov].loom` : Matrix with covid cells and controls
++ `nCoV.rds` : R data object
++ `all.cell.annotation.meta.txt` : metadata, cellular type info
+
+
+Retrival commands (soft links):
+
+```{bash eval=FALSE}
+mkdir singlecell
+cd singlecell
+ln -s /mnt/Citosina/amedina/larteaga/COVID19/pyscenic/authors/recuperacion/avg3/exp_mat_both.loom exp_mat_both.loom
+ln -s /mnt/Citosina/amedina/larteaga/COVID19/pyscenic/authors/groups/control/avg3/exp_mat_control.loom exp_mat_control.loom
+ln -s /mnt/Citosina/amedina/larteaga/COVID19/pyscenic/authors/groups/cov/avg3/exp_mat_cov.loom exp_mat_cov.loom
+ln -s /mnt/Citosina/amedina/larteaga/COVID19/R/nCoV.rds nCoV.rds
+ln -s /mnt/Citosina/amedina/larteaga/COVID19/pyscenic/authors/recuperacion/all.cell.annotation.meta.txt all.cell.annotation.meta.txt
+```
+
+
+***
+
+\
+
+#### **Pseudo-bulk in single cell**
+
+Code shared by Leo Arteaga
+
+```{r eval=FALSE}
+library(SingleCellExperiment) # single cell workflow
+library(scuttle)
+library(dplyr) # data manipulation
+library(Seurat) # single cell workflow
+
+# load R data object and cell metadata
+nCoV <- readRDS("/mnt/Citosina/amedina/mpadilla/COVID19/Data/singlecell/nCoV.rds")
+metadata <- read.delim2("/mnt/Citosina/amedina/mpadilla/COVID19/Data/singlecell/all.cell.annotation.meta.txt",header = TRUE, stringsAsFactors = FALSE,check.names = FALSE, sep = "\t")
+
+# subsets guided by cell ID
+nCoV.sub <- subset(x = nCoV, subset = ID %in% metadata$ID)
+nCoV.sub$celltype <- metadata$celltype
+
+# sce object of previous subset
+nCoV.sub.sce <- as.SingleCellExperiment(nCoV.sub)
+
+# 
+out <- aggregateAcrossCells(nCoV.sub.sce, colData(nCoV.sub.sce)$celltype)
+head(counts(out))
+```
+
+```
+            B Epithelial Macrophages Mast NK Neutrophil Plasma    T mDC pDC
+AL627309.1  1         15          63    0  1          1      1   10   4   1
+AL669831.5  2        188         754    0 20          5     46  125  19   1
+FAM87B      0          0          32    0  0          0      0    0   1   0
+LINC00115  12         59         897    2 28         11     32  157  13   5
+FAM41C      0        131         473    2  3          3     18   40   8   0
+NOC2L      39       1130        6771    3 99         28    444 1279 118  24
+```
+
+
+`aggregateAcrossCells` : function, Sum counts or average expression values for each feature across groups of cells, while also aggregating values in the colData and other fields in a SummarizedExperiment.
+
+
+ se hace la unión de la células por tipo celular y suma las counts de las células
+
+***
+
+\
+
+#### **PCA Visualization**
+
+\
+
+```{r eval=FALSE}
+library(ggplot2)
+
+pca.df = as.data.frame(reducedDim(out, "PCA"))
+pca.df$cell_type = colnames(out)
+
+## Save to png image
+png(file = "plots/psebulk_sctypes.png", width = 800, height = 800) 
+
+ggplot(pca.df, aes(x=PC_1, y=PC_2, color=cell_type)) + 
+    geom_point(size=4)
+
+dev.off()
+```
+
+\
+
+![](./imgs/pca/psebulk_sctypes.png)
+
+_Save that environment_
+
+
+***
+
+\
+
+### **PCA in bulk**
+
+\
+
+This section includes:
+
++ Mock A549 samples with and without hACE2 PCA
++ Batch correction using ComBat-seq
+
+***
+
+#### **Mock treated A549 cell line with and without vector expresing hACE2 PCA**
+
+\
+
+Read bulk data. 18 samples. 
+
+* 13 - Mock treated A549
+* 5 - Mock treated A549 with hACE2 vector
+
+File with joined samples from both experiments:
+
+In bash, at `/mnt/Citosina/amedina/mpadilla/COVID19/` :
+
+```{bash eval=FALSE}
+cat Data/counts2/Mock_treated_A549/Mock_treated_A549-counts.csv Data/counts2/Mock_treated_A549_w_vector_expressing_hACE2/Mock_treated_A549_w_vector_expressing_hACE2-counts-nh.csv > pca/data/Mock_treated_A549_wnwo_ACE2-counts.csv
+```
+
+R, at `/mnt/Citosina/amedina/mpadilla/COVID19/pca/` :
+
+```{r eval=FALSE}
+library(tidyverse) # contains dplyr and ggplot
+library(ggbiplot) # ggplot version of biplot for pca
+
+## Read count matrixes from A549 cell line, takes ~5 min
+mockA549both <- as.data.frame(read.csv("/mnt/Citosina/amedina/mpadilla/COVID19/pca/data/Mock_treated_A549_wnwo_ACE2-counts.csv")) 
+# dim(mockA549both)
+#  19 194360
+meta <- as.data.frame(read.csv("/mnt/Citosina/amedina/mpadilla/COVID19/pca/data/studydesign_date_mockA549.csv", sep = ","))
+
+## Clean data
+mockA549both <- column_to_rownames(mockA549both, var = "samples") # samples rows x genes cols 19 194360
+# take off sample that has its own batch (combat seq doesnt support batches w/ only one sample)
+mockA549both <- mockA549both[which(rownames(mockA549both) != "GSM4462342"),]
+mockA549both <- mockA549both[,which(apply(mockA549both,2,var) != 0)] # taking off genes that were not expressed
+# dim(mockA549both)
+#   18 152789
+mockA549both <- t(mockA549both) # transpose data for sva
+
+meta <- meta[which(meta$samples != "GSM4462342"),]
+meta <- meta[match(colnames(mockA549both), meta$samples),] # put meta in the same order as counts matrix
+
+head(mockA549both)[,1:5]
+```
+
+Note: None of the genes are repited in the experiment tables.
+
+***
+
+\
+
+#### **Batch correction**
+
+
+Each sample gene counts are in TPMs, so they require another level of normalization to accurately compare between samples.
+
+To do this, here I use the info about release-dates of samples, in order to perform batch effect correction.
+[ComBat-seq](https://academic.oup.com/nargab/article/2/3/lqaa078/5909519) is an improved model from ComBat using negative binomial regression, which specifically targets RNA-Seq count data.
+
+`ComBat-seq` is available in the [sva package in Bioconductor](http://www.bioconductor.org/packages/release/bioc/html/sva.html)
+
+\
+
+**Visualize mean vs sd to see skewed relation:**
+
+```{r eval=FALSE}  
+meancts <- apply(mockA549both[-1], 2, mean)
+sdcts <- apply(mockA549both[-1], 2, sd)
+metrics <- tibble::tibble(meancts, sdcts)
+
+  pdf(file = "/mnt/Citosina/amedina/mpadilla/COVID19/pca/plotsA549/mean_sd_tpmcts_relation.pdf") 
+  metrics %>%
+    ggplot(aes(x=mean, y=sd)) + 
+      geom_point(size=5)
+  dev.off()
+  
+```
+
+![](../plotsA549/mean_sd_tpmcts_relation.png)
+
+\
+
+**Define batches and run combat-seq**
+
+```{r eval=FALSE}
+# Define batches (in this case by date)
+dates <- unique(meta$release_dates)
+batch <- meta$release_dates
+for (i in 1:length(dates)) {
+  batch <- str_replace(batch, dates[i], paste0(i))
+  i = i + 1
+}
+batch <- as.numeric(batch)
+bio.cond <- rep(c(1,2),c(13,5))
+
+# Correction of batch effects with ComBat-seq
+library(sva) 
+adj.cts.both <- ComBat_seq(mockA549both, 
+                           batch = batch, 
+                           group = bio.cond)
+```
+
+```
+Found 3 batches
+Using full model in ComBat-seq.
+Adjusting for 1 covariate(s) or covariate level(s)
+Estimating dispersions
+Fitting the GLM model
+Shrinkage off - using GLM estimates for parameters
+Adjusting the data
+```
+
+```{r eval=FALSE}
+adj.cts.both <- adj.cts.both[which(apply(adj.cts.both,1,var) != 0),] # quit counts that transform to 0
+```
+
+
+
+***
+
+\
+
+#### **PCA visualization**
+
+Counts between samples are now corrected. Proceed to PCA visualization:
+
+```{r eval=FALSE}
+## PCA
+pcaA549both <- prcomp(t(as.data.frame(adj.cts.both)), scale = T)
+  experiments <- rep(c("Mock A549", "Mock A549 + ACE2 "), c(13,5))
+  pcaA549both$x <- add_column(as.data.frame(pcaA549both$x), experiments)
+
+  ## Plot with ggplot Mock A549 with n without ACE2 expression
+  png(file = "/mnt/Citosina/amedina/mpadilla/COVID19/pca/plotsA549/pca_mockA549_wnwo_ACE2_expr_scl_corr.png", 
+      width = 800, height = 800)
+  pcaA549both$x %>%
+    ggplot(aes(x=PC1, y=PC2, color=experiments)) + 
+      geom_point(size=4)
+  dev.off()
+```
+
+![](./imgs/pca/pca_mockA549_wnwo_ACE2_expr_scl_corr.png)
+
+\
+
+```{r eval=FALSE} 
+  ## ggbiplot version
+  pcaA549both <- prcomp(t(as.data.frame(adj.cts.both)), scale = F)
+  png(file = "/mnt/Citosina/amedina/mpadilla/COVID19/pca/plotsA549/pca_mockA549_wnwo_ACE2_ggbi_scl_corr.png", width = 800, height = 800) 
+  ggbiplot(pcaA549both, group = experiments, var.axes = FALSE,  ellipse = TRUE,
+           main = "Mock treated A549 cell line with and without vector expresing hACE2 PCA")
+  dev.off()
+````
+
+![](./imgs/pca/pca_mockA549_wnwo_ACE2_ggbi_scl_corr.png)
+
+\
+
+
+***
+
+\
+
+### **PCA pseudo-bulk + bulk**
+
+\
+
+This section includes:
+
+* Normalize pseudobulk data as bulk data
+* Join pseudo-bulk and bulk data
+* Correct by batch effect
+* PCA Visualization
+
+***
+
+\
+
+#### **Normalize pseudobulk data as bulk data (TPM)**
+
+TPM normalization computation can be consoulted [here](https://www.reneshbedre.com/blog/expression_units.html).
+
+```{r eval=FALSE}
+pb.counts <- counts(out) # current pseudo-bulk data
+dim(pb.counts)
+# 23916    10
+pb.counts <- pb.counts[which(apply(pb.counts,1,var) != 0),] # take off genes with 0 counts
+dim(pb.counts)
+# 23851    10
+
+### Obtain "TPM" counts
+
+## 1. Obtain gene lengths through ensembl
+genes.psb <- rownames(pb.counts)
+library(biomaRt) # consult ensembl, info about genes
+    
+mart <- useMart(biomart="ENSEMBL_MART_ENSEMBL", 
+                dataset = "hsapiens_gene_ensembl",
+                host = "https://feb2021.archive.ensembl.org") # v 103
+    
+# Create a query and send it to biomart server, takes 1 min
+res <- getBM(attributes = c('external_gene_name', 'transcript_length'),
+             filters = 'external_gene_name',
+             values = genes.psb,
+             mart = mart)
+    
+# dim(res)
+
+# take off repeated genes
+dup <- which(duplicated(res$external_gene_name))
+res.fltr <- res[-dup,]
+    
+# some genes are missing, take avg gene length
+avg.len <- mean(na.omit(as.numeric(res.fltr$transcript_length)))
+# add missing genes to results
+missing <- setdiff(genes.psb,res$external_gene_name)
+missing.lens <- data.frame(external_gene_name = missing, transcript_length = avg.len)
+res.com <- full_join(res.fltr, missing.lens)
+
+# sort as in genes.psb and counts
+sort.index <- match(genes.psb, res.com$external_gene_name)
+res.com <- res.com[sort.index,]
+
+
+## 2. Normalize to TPM
+
+# divide each count by the length of the given gene
+tpm.counts <- t( (pb.counts * 1e3) / res.com$transcript_length)
+tpm.counts <- (tpm.counts / colSums(tpm.counts)) * 1e6 # this step bring up the nan's, na's, and infs
+# dim(tpm.counts)
+# 10 23851
+ 
+## checking transformed values
+# which(is.infinite(tpm.counts))
+# which(is.nan(tpm.counts))
+# which(is.na(tpm.counts))
+# which(apply(tpm.counts,2,var) != 0) # 0's
+# no returns so all ok
+```
+
+
+\
+
+#### **Join pseudo-bulk and bulk data**
+
+```{r eval=FALSE}
+## Join bulk and sc data
+tpm.counts <- t(tpm.counts) # tpm.counts is now rows genes, cols cell types
+tpm.counts.g <- rownames_to_column(as.data.frame(tpm.counts), var = "genes") # to use it in full_join
+mockA549both.g <- rownames_to_column(as.data.frame(mockA549both), var = "genes")
+mockA549both.g <- as.data.frame(mockA549both.g)
+tpm.counts.g <- as.data.frame(tpm.counts.g)
+merged.data <- full_join(mockA549both.g, tpm.counts.g, by = "genes")
+merged.data <- column_to_rownames(merged.data, var = "genes")
+merged.data <- as.data.frame(merged.data) # dim 161603     28
+merged.data[is.na(merged.data)] <- 0
+
+# head(merged.data)
+```
+
+```
+                  GSM4432384 GSM4432385 GSM4432386 GSM4432390 GSM4432391
+ARF5               129.09000  139.23700  139.36800  174.49200  157.82200
+M6PR               118.52500  118.15200  122.70000   35.20280   44.52700
+ESRRA               21.68990   17.35320   24.62930   10.30860   12.26180
+FKBP4               76.88660   77.79130   80.23560   35.79200   36.97050
+ENST00000001146.6    3.33594    4.05915    3.11767    0.00000    1.48262
+NDUFAF7              6.91995    8.45207   10.21910    8.73849    9.37761
+                  GSM4432394 GSM4432395 GSM4462336 GSM4462337 GSM4462338
+ARF5               107.28500   87.07740  141.97400  133.01200  109.91600
+M6PR                86.09490   73.24400   99.64710   95.56420   90.23610
+ESRRA                4.05257   11.86710    7.84867    8.54447    6.03065
+FKBP4               80.49440   68.69320   73.82630   71.40710   64.74470
+ENST00000001146.6    2.99209    2.16069    1.27361    2.25698    2.65665
+NDUFAF7             10.87970    8.52757    8.39476    8.97969    6.64898
+                  GSM4462354 GSM4462355 GSM4462356 GSM4462343  GSM4462344
+ARF5               185.30000  122.19100  105.26700   25.14480  32.0129000
+M6PR                 7.48259  100.92200   99.35750  134.61400 139.7980000
+ESRRA                4.92387    6.03080    4.64090   10.08570  23.1926000
+FKBP4               77.19550   94.14320   81.03490   90.46960  92.2985000
+ENST00000001146.6    0.00000    2.35479    2.39969    6.42617   2.1127100
+NDUFAF7              3.01266    8.82565    9.23353    6.07671   0.0952302
+                  GSM4486157 GSM4486158 GSM4486159            B   Epithelial
+ARF5                30.57880   36.69230   56.24080 4.599419e+07 621358406.01
+M6PR               158.26000  149.51800  166.60100 3.301272e+02    318728.41
+ESRRA               15.15250    1.84586   11.42720 1.066792e+05  16549071.58
+FKBP4              118.07300  137.73000  139.34500 2.496064e+02     74359.55
+ENST00000001146.6    0.00000    1.53948    2.63591 0.000000e+00         0.00
+NDUFAF7              7.87352    6.90011    4.21368 6.040471e+04  12328641.37
+                  Macrophages        Mast          NK   Neutrophil       Plasma
+ARF5               2780144272 663452.4485 9580910.853 45209302.326 1444152131.8
+M6PR                  3281493    692.1648   12125.889   702074.957    1311389.7
+ESRRA               870787145  63235.9355  870475.360     5505.082     148290.9
+FKBP4                 1184388    217.7469    1319.289    13561.735   10313055.2
+ENST00000001146.6           0      0.0000       0.000        0.000          0.0
+NDUFAF7               6856830  28911.2051 7082505.285   657082.452    3512766.3
+                             T          mDC         pDC
+ARF5              2456372093.0 10998436.904 2390581.087
+M6PR                  339106.6     1198.752   22131.554
+ESRRA                9997383.3 21893298.445 1017589.766
+FKBP4                4244720.4    89721.928    4334.977
+ENST00000001146.6          0.0        0.000       0.000
+NDUFAF7             24624276.5  1376421.907  999443.641
+```
+
+_Note:_ This object was saved at pca/data/ and can be load like this:
+
+```{r eval=FALSE}
+# merged data psbulk and bulk
+merged.data <- as.data.frame(read.csv("./data/mockA549_psbulk-merged_data.csv", sep = ","))
+merged.data <- column_to_rownames(merged.data, var = "genes")
+```
+
+
+\
+
+#### **Correct by batch effect**
+
+In this case, batches are the 3 sequencing groups from bulk + 1 batch of single cell. Experimental conditions is not included in model because the group from single cell is the same as its batch.
+
+```{r eval=FALSE}
+## Correct batch effects
+batch.m <- c(batch, rep(4,10))
+# batch.m <- c(rep(1,7), rep(2,8), rep(3,3), rep(4,10)) # alternatively use this
+merged.data <- as.matrix(merged.data) # convert to matrix to avoid error (combat returning list instead of matrix)
+adj.cts.all <- ComBat_seq(merged.data, batch = batch.m)
+```
+
+```
+Found 4 batches
+Using null model in ComBat-seq.
+Adjusting for 0 covariate(s) or covariate level(s)
+Estimating dispersions
+Fitting the GLM model
+Shrinkage off - using GLM estimates for parameters
+Adjusting the data
+```
+
+```{r eval=FALSE}
+# save to file
+write.csv(as.matrix(adj.cts.all), file = "./data/mockA549_psbulk-merged_data-adj.csv", quote = FALSE)
+object.size(adj.cts.all)/1e6 # 47.2 MB
+dim(adj.cts.all) # 161603     28
+class(adj.cts.all) # "matrix" "array"
+```
+
+\
+
+_Note:_ This object was saved at pca/data/ and can be load like this:
+
+```{r eval=FALSE}
+# merged data psbulk and bulk with batch correction (adjusted counts)
+adj.cts.all <- as.data.frame(read.csv("./data/mockA549_psbulk-merged_data-adj.csv", sep = ","))
+adj.cts.all <- column_to_rownames(adj.cts.all, var = "genes")
+adj.cts.all <- as.matrix(adj.cts.all)
+```
+
+***
+
+\
+
+#### **PCA Visualization**
+
+##### **PCA without batch correction**
+
+```{r eval=FALSE}
+## PCA
+experiments <- rep(c("Mock A549", "Mock A549 + ACE2 "), c(13,5))
+experiments <- c(experiments, str_subset(colnames(merged.data),"^GSM", negate = T)) # add cell types
+pca.all <- prcomp(t(merged.data), scale = TRUE)
+## ggbiplot version
+png(file = "plotsA549/pca_mockA549_wnwo_ACE2_psebulk_noadj_PC34_ggbi.png", width = 800, height = 800) 
+ggbiplot(pca.all, group = experiments, var.axes = FALSE,  ellipse = TRUE, choices = 3:4, # change choices for PCs
+           main = "Mock treated A549 cell line with and without vector expresing hACE2 + pseudo-bulk cell types - noadj")
+dev.off()
+```
+
+PC1 and PC2 : `variation explained = 26.7%`
+
+![](./imgs/pca/pca_mockA549_wnwo_ACE2_psebulk_noadj_ggbi.png)
+
+\
+
+PC3 and PC4 : `variation explained = 12.3%`
+
+![](./imgs/pca/pca_mockA549_wnwo_ACE2_psebulk_noadj_PC34_ggbi.png)
+
+
+
+***
+
+\
+
+
+
+\
+
+##### **PCA with batch correction**
+
+```{r eval=FALSE}
+experiments <- rep(c("MA549", "MA549+ACE2 "), c(13,5))
+experiments <- c(experiments, str_subset(colnames(adj.cts.all),"^GSM", negate = T)) # add cell types
+## PCA
+pca.all <- prcomp(t(adj.cts.all), scale = TRUE)
+
+## ggbiplot version
+png(file = "plotsA549/pca_mockA549_wnwo_ACE2_psebulk_adj_PC12_ggbi.png", width = 800, height = 800) 
+ggbiplot(pca.all, group = experiments, var.axes = FALSE,  ellipse = TRUE, obs.scale = 3, labels = experiments, choices = 1:2)
+dev.off()
+```
+
+\
+
+**Data: A459 cell lines and pseudo-bulk - PCA**
+
+PC1 and PC2 : `variation explained = 27.9%`
+
+The major drivers of variability in this first PCA seem to be bulk vs single-cell samples. With Macrophages being far away.
+
+![](./imgs/pca/pca_mockA549_wnwo_ACE2_psebulk_adj_PC12_ggbi.png) 
+
+\
+
+PC2 and PC3 : `variation explained = 14.8%`
+
+![](./imgs/pca/pca_mockA549_wnwo_ACE2_psebulk_adj_PC23_ggbi.png)
+
+PC3 and PC4 : `variation explained = 13.2%`
+
+![](./imgs/pca/pca_mockA549_wnwo_ACE2_psebulk_adj_PC34_ggbi.png)
+
+***
+
+\
+
+
+#### **R sessionInfo()**
+
+\
+
+```{r eval=FALSE}
+sessionInfo()
+```
+
+```
+R version 4.0.2 (2020-06-22)
+Platform: x86_64-pc-linux-gnu (64-bit)
+Running under: CentOS Linux 7 (Core)
+
+Matrix products: default
+BLAS:   /cm/shared/apps/r/4.0.2-studio/lib64/R/lib/libRblas.so
+LAPACK: /cm/shared/apps/r/4.0.2-studio/lib64/R/lib/libRlapack.so
+
+locale:
+ [1] LC_CTYPE=en_US.UTF-8       LC_NUMERIC=C
+ [3] LC_TIME=en_US.UTF-8        LC_COLLATE=C
+ [5] LC_MONETARY=en_US.UTF-8    LC_MESSAGES=en_US.UTF-8
+ [7] LC_PAPER=en_US.UTF-8       LC_NAME=C
+ [9] LC_ADDRESS=C               LC_TELEPHONE=C
+[11] LC_MEASUREMENT=en_US.UTF-8 LC_IDENTIFICATION=C
+
+attached base packages:
+[1] grid      stats     graphics  grDevices utils     datasets  methods
+[8] base
+
+other attached packages:
+ [1] ggbiplot_0.55       scales_1.1.1        plyr_1.8.6
+ [4] sva_3.38.0          BiocParallel_1.24.1 genefilter_1.72.1
+ [7] mgcv_1.8-33         nlme_3.1-151        forcats_0.5.1
+[10] stringr_1.4.0       dplyr_1.0.3         purrr_0.3.4
+[13] readr_1.4.0         tidyr_1.1.2         tibble_3.1.3
+[16] ggplot2_3.3.5       tidyverse_1.3.0
+
+loaded via a namespace (and not attached):
+  [1] readxl_1.3.1         backports_1.2.1      igraph_1.2.6
+  [4] lazyeval_0.2.2       splines_4.0.2        listenv_0.8.0
+  [7] scattermore_0.7      digest_0.6.27        htmltools_0.5.1.1
+ [10] fansi_0.5.0          magrittr_2.0.1       memoise_2.0.0
+ [13] tensor_1.5           cluster_2.1.0        ROCR_1.0-11
+ [16] limma_3.46.0         globals_0.14.0       annotate_1.68.0
+ [19] modelr_0.1.8         matrixStats_0.60.0   colorspace_2.0-2
+ [22] blob_1.2.1           rvest_0.3.6          ggrepel_0.9.1
+ [25] haven_2.3.1          crayon_1.4.1         jsonlite_1.7.2
+ [28] spatstat_1.64-1      spatstat.data_1.7-0  survival_3.2-7
+ [31] zoo_1.8-8            glue_1.4.2           polyclip_1.10-0
+ [34] gtable_0.3.0         leiden_0.3.7         future.apply_1.7.0
+ [37] BiocGenerics_0.36.1  abind_1.4-5          DBI_1.1.1
+ [40] edgeR_3.32.1         miniUI_0.1.1.1       Rcpp_1.0.7
+ [43] viridisLite_0.4.0    xtable_1.8-4         reticulate_1.18
+ [46] bit_4.0.4            stats4_4.0.2         htmlwidgets_1.5.3
+ [49] httr_1.4.2           RColorBrewer_1.1-2   ellipsis_0.3.2
+ [52] Seurat_3.9.9.9036    ica_1.0-2            pkgconfig_2.0.3
+ [55] XML_3.99-0.6         farver_2.1.0         uwot_0.1.10
+ [58] dbplyr_2.0.0         deldir_0.2-9         locfit_1.5-9.4
+ [61] utf8_1.2.2           tidyselect_1.1.0     labeling_0.4.2
+ [64] rlang_0.4.11         reshape2_1.4.4       later_1.2.0
+ [67] AnnotationDbi_1.52.0 munsell_0.5.0        cellranger_1.1.0
+ [70] tools_4.0.2          cachem_1.0.5         cli_3.0.1
+ [73] generics_0.1.0       RSQLite_2.2.7        broom_0.7.3
+ [76] ggridges_0.5.3       fastmap_1.1.0        goftest_1.2-2
+ [79] bit64_4.0.5          fs_1.5.0             fitdistrplus_1.1-3
+ [82] RANN_2.6.1           pbapply_1.4-3        future_1.21.0
+ [85] mime_0.11            xml2_1.3.2           compiler_4.0.2
+ [88] rstudioapi_0.13      plotly_4.9.3         png_0.1-7
+ [91] spatstat.utils_2.0-0 reprex_1.0.0         stringi_1.6.2
+ [94] lattice_0.20-41      Matrix_1.3-2         vctrs_0.3.8
+ [97] pillar_1.6.2         lifecycle_1.0.0      lmtest_0.9-38
+[100] RcppAnnoy_0.0.18     data.table_1.14.0    cowplot_1.1.1
+[103] irlba_2.3.3          httpuv_1.6.1         patchwork_1.1.1
+[106] R6_2.5.0             promises_1.2.0.1     KernSmooth_2.23-18
+[109] gridExtra_2.3        IRanges_2.24.1       parallelly_1.23.0
+[112] codetools_0.2-18     MASS_7.3-53          assertthat_0.2.1
+[115] withr_2.4.2          SeuratObject_4.0.0   sctransform_0.3.2
+[118] S4Vectors_0.28.1     parallel_4.0.2       hms_1.1.0
+[121] rpart_4.1-15         Rtsne_0.15           Biobase_2.50.0
+[124] shiny_1.6.0          lubridate_1.7.9.2
+```
+
+
+\
+
+### **Conclusion**
+
+\
+
+As can be seen from the PCs2&3 and PCs3&4 below (shown also in the previous section):
+
+* Mock treated A549 cell line (**MA549**) data points are disperse; its expected normal-assumed distribution seems to be pulled by two outlier-like samples. This data come from a cancer cell line, so an heterogeneous gene expression is expected.
+
+* Mock treated A549 cell line with hACE2 vector expression (**MA549+ACE2**) data points and its distribution is close to but separated from MA549’s.
+
+* **MA549, MA549+ACE2 and Macrophages** cell-type seem to be the drivers or variability in both PCA plots.
+
+* The **epithelial** cell type data point from single-cell (sc) data **locates within the A549** cell line data points from bulk and its distribution, as expected since they correspond to the same tissue.
+
+    + in PCs2&3 this is more notorious, since from sc data only T-cells locate within the distribution.
+    
+* **Neutrophil, Plasma, NK, pDC, mDC** locate clustered together within MA549 or MA459+ACE2 distributions in PCs2&3 and Ps3&4, respectively. This
+
+\
+
+PC2 and PC3 : `variation explained = 14.8%`
+
+![](./imgs/pca/pca_mockA549_wnwo_ACE2_psebulk_adj_PC23_ggbi.png)
+
+PC3 and PC4 : `variation explained = 13.2%`
+
+![](./imgs/pca/pca_mockA549_wnwo_ACE2_psebulk_adj_PC34_ggbi.png)
+
+\
+
+### **Refs**
+
+\
+
+In collaboration with Leonardo Arteaga, Ana Betty Villaseñor Altamirano, Karen Nuñez Reza and Alejandra Medina Rivera.
+
+\
+
+**References:**
+
+[1] single cell data
+
+[2] Blanco-Melo, D., Nilsson-Payant, B. E., Liu, W. C., Uhl, S., Hoagland, D., Møller, R., ... & Albrecht, R. A. (2020). Imbalanced host response to SARS-CoV-2 drives development of COVID-19. Cell, 181(5), 1036-1045.
+
+[3] Zhang, Y., Parmigiani, G., & Johnson, W. E. (2020). ComBat-seq: batch effect adjustment for RNA-seq count data. NAR genomics and bioinformatics, 2(3), lqaa078.
+
+[4] Foster, K. A., Oster, C. G., Mayer, M. M., Avery, M. L., & Audus, K. L. (1998). Characterization of the A549 cell line as a type II pulmonary epithelial cell model for drug metabolism. Experimental cell research, 243(2), 359-366.
+
+\
+
+**Programs and versions:**
+
+* R 4.0.2
+
+    packages:
+    + SingleCellExperiment
+    + scuttle
+    + Seurat
+    + tidyverse
+      + dplyr
+      + ggplot2
+    + biomaRt
+    + ggbiplot
+    + sva
+      + ComBat-seq
+
+\
+
+_Last update: Sep 7th,2021_
+
+
