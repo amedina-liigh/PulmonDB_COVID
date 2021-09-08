@@ -8,6 +8,11 @@ The authors perfomed  genome-wide association study (GWAS) of data for 1778 infe
 
 [Hu, Jianchang, et al. "Genetic variants are identified to increase risk of COVID-19 related mortality from UK Biobank data." Human genomics 15.1 (2021): 1-10.](https://link.springer.com/article/10.1186/s40246-021-00306-7)
 
+### Review of COVID-19: susceptibility
+
+The authors summarized the knoledge about susceptibility factors to COVID-19. Published on 25th August, 2021
+
+[Colona, Vito Luigi, et al. "Update on human genetic susceptibility to COVID-19: susceptibility to virus and response." (2021): 1-8.](https://humgenomics.biomedcentral.com/articles/10.1186/s40246-021-00356-x)
 
 ### Exploration of all ACE2 SNPs
 
