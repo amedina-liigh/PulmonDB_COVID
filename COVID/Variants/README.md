@@ -14,6 +14,19 @@ The authors summarized the knoledge about susceptibility factors to COVID-19. Pu
 
 [Colona, Vito Luigi, et al. "Update on human genetic susceptibility to COVID-19: susceptibility to virus and response." (2021): 1-8.](https://humgenomics.biomedcentral.com/articles/10.1186/s40246-021-00356-x)
 
+### Italian and Spanish GWAS
+
+A meta-analysis of GWAS studies with 1610 patients and 2250 control participants from Italy (patients = 835, controls = 1255) and Spain (patients = 775, controls = 950)were included in the final analysis.
+
+
+[Severe Covid-19 GWAS Group. "Genomewide association study of severe Covid-19 with respiratory failure." New England Journal of Medicine 383.16 (2020): 1522-1534.](https://www.nejm.org/doi/full/10.1056/NEJMoa2020283)
+
+### GenOMIC GWAS from UK
+
+Using data from GenOMICC (Genetics Of Mortality In Critical Care), the authors studied 2,244 GWAS from critically ill patients with COVID-19 from 208 UK intensive care units.
+
+[Pairo-Castineira, Erola, et al. "Genetic mechanisms of critical illness in Covid-19." Nature 591.7848 (2021): 92-98.](https://www.nature.com/articles/s41586-020-03065-y)
+
 ### Exploration of all ACE2 SNPs
 
 With a total of 16,860 SNPS located within ACE2, the study was limited into SNPs with minor allele frequency (MAF) > 0.001: therefore 318 SNPs were used (308 intronic, 4 up-stream transcript variants, 2 synonymous, and 4 missense). 
