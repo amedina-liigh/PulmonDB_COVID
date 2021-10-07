@@ -1,0 +1,618 @@
+---
+title: "PulmonDB - COVID19."
+# date: "Oct 5th,2021"
+author: "Monica Padilla"
+output:
+  html_document:
+  theme: cosmo
+highlight: textmate
+---
+
+\
+
+## **PCA between bronchealveolar immune cells (scRNA-seq) and SARS-CoV-2 infected A549, NHBE, Calu-3 cell lines and Lung samples (RNA-seq)** {.tabset}
+
+Single cell and RNA seq data will be compared in the project. In order to know if the data is actually similar, I will explore it with PCA. Then, we can talk about the comparison of results (from single cell and bulk) provided the gene expression differences seen here.
+
+```{r, include=FALSE}
+# Dont run code in this document
+knitr::opts_chunk$set(
+  eval = FALSE
+)
+```
+
+\
+
+### **Prepare terminal**
+
+```{bash eval=FALSE}
+ssh -Y mpadilla@dna.liigh.unam.mx
+screen -S pca
+qlogin
+cd /mnt/Citosina/amedina/mpadilla/COVID19/pca/
+module unload r/3.2.1
+module load r/4.0.2
+umask 2
+```
+
+Some previous steps in the current report as well as code are in a previous report, see: `PCA-pseudobulk_n_bulkA549.*`.
+
+### **Bulk study design**
+
+\
+
+When working with expression sequencing data, it is essential to know where data variation may come from. As well variation due to biological conditions, data can also variate due to batches, e.g. groups of sequencing runs.
+
+The lines of code below just produces a file that specifies the study design (samples, release dates and experimental conditions).
+
++ `/mnt/Citosina/amedina/mpadilla/COVID19/pca/data/studydesign_SC2-inf-celllines_Lung.csv`
+
+***
+
+\
+
+Current dir = `/mnt/Citosina/amedina/mpadilla/COVID19/Data/`
+
+Study design of all data[2]: `metadata/inter-files/dates_samples_experiments.tsv`
+
+\
+
+**Bulk data to be used:**
+
+A549 cell line : adenocarcinomic human alveolar basal epithelial cells, model for alveolar Type II pulmonary epithelium (AT2) cell type [4]
+`pca/data/studydesign_date_mockA549.csv`
+
+NHBE cell line :
+
+Calu-3 cell line :
+
+Lung biopsy/samples
+
+\
+
+**Subset for SARS-CoV-2 infected cell lines and COVID19 Lung sample with controls:**
+
+Current dir = `/mnt/Citosina/amedina/mpadilla/COVID19/Data/`
+
+```{bash eval=FALSE}
+echo 'release_dates,samples,experiments' > ../pca/data/studydesign_SC2-inf-celllines_Lung.csv
+# SARS-CoV-2 infected samples
+grep "SARS-CoV-2_infected_[ANC]" metadata/inter-files/dates_samples_experiments.tsv | perl -pe 's/\t/,/g'>> ../pca/data/studydesign_SC2-inf-celllines_Lung.csv
+# Mock samples
+grep "Mock_treated_[ANC]" metadata/inter-files/dates_samples_experiments.tsv | perl -pe 's/\t/,/g'>> ../pca/data/studydesign_SC2-inf-celllines_Lung.csv
+# Lung samples
+grep "Lung_" metadata/inter-files/dates_samples_experiments.tsv | perl -pe 's/\t/,/g'>> ../pca/data/studydesign_SC2-inf-celllines_Lung.csv
+```
+
+\
+
+### **PCA of bulk samples**
+
+\
+
+This section includes:
+
++ Join bulk samples in CLI
++ Clean data
++ Correct by batch effect
++ PCA visualization
+
+***
+
+#### **Join bulk samples in CLI**
+
+
+```{bash eval=FALSE}
+cat ../../pca/data/Lung_all-Mock_A549_all-SC2_inf_A549_all-counts.csv SARS-CoV-2_infected_Calu-3/SARS-CoV-2_infected_Calu-3-counts.csv SARS-CoV-2_infected_NHBE/SARS-CoV-2_infected_NHBE-counts.csv Mock_treated_Calu-3/Mock_treated_Calu-3-counts.csv Mock_treated_NHBE/Mock_treated_NHBE-counts.csv > ../../pca/data/SARS-CoV-2-inf-celllines_Lung-counts.csv
+```
+
+#### **Clean data**
+
+```{r eval=FALSE}
+# Load merged data of SARS-CoV-2-inf-celllines and Lung experiments
+bulk <- as.data.frame(read.csv("./data/SARS-CoV-2-inf-celllines_Lung-counts.csv", sep = ","))
+dim(bulk) #  54 194361
+# Load metadata
+meta.bulk <- as.data.frame(read.csv("/mnt/Citosina/amedina/mpadilla/COVID19/pca/data/studydesign_SC2-inf-celllines_Lung.csv", sep = ","))
+
+
+## Clean data
+bulk <- column_to_rownames(bulk, var = "samples")
+bulk <- bulk[,which(apply(bulk,2,var) != 0)] # taking off genes that were not expressed
+# dim(bulk)
+#    54 174791
+bulk <- t(bulk)
+
+meta.bulk <- meta.bulk[match(colnames(bulk), meta.bulk$samples),] # put meta in the same order as counts matrix
+
+head(bulk)[,1:5]
+```
+
+
+***
+
+  \
+
+#### **Batch correction**
+
+**Define batches and run combat-seq**
+
+```{r eval=FALSE}
+# Define batches (in this case by date)
+dates <- unique(meta.bulk$release_dates)
+batch <- meta.bulk$release_dates
+for (i in 1:length(dates)) {
+  batch <- str_replace(batch, dates[i], paste0(i))
+  i = i + 1
+}
+batch <- as.numeric(batch)
+# Define biological conditions
+exprmts <- rev(unique(meta.bulk$experiments))
+bio.cond <- meta.bulk$experiments
+for (i in 1:length(exprmts)) {
+  bio.cond <- str_replace(bio.cond, exprmts[i], paste0(i))
+  i = i + 1
+}
+bio.cond <- as.numeric(bio.cond)
+
+# Correction of batch effects with ComBat-seq
+library(sva)
+adj.cts.both <- ComBat_seq(bulk,
+                           batch = batch,
+                           group = bio.cond)
+```
+
+```
+Found 4 batches
+Using full model in ComBat-seq.
+Adjusting for 10 covariate(s) or covariate level(s)
+Estimating dispersions
+Fitting the GLM model
+Shrinkage off - using GLM estimates for parameters
+Adjusting the data
+```
+
+Check created object
+
+```{r eval=FALSE}
+class(adj.cts.both) # "matrix" "array"
+adj.cts.both <- adj.cts.both[which(apply(adj.cts.both,1,var) != 0),] # quit counts that transform to 0
+dim(adj.cts.both) # 174791     54
+object.size(adj.cts.both)/1e6 # 87.4 MB
+```
+
+\
+
+_Note:_ Object saved as and can be loaded as following.
+```{r eval=FALSE}
+# write.csv(adj.cts.both, file = "data/SARS-CoV-2-inf-celllines_Lung-counts-adj.csv", quote = F)
+
+```
+
+
+***
+
+#### **PCA Visualization**
+
+\
+
+Make dir for these plots:
+
+```{bash}
+mkdir plots_SC2-inf-celllines-Lung/
+```
+
+\
+
+
+```{r}
+## PCA
+pca.bulk <- prcomp(t(as.data.frame(adj.cts.both)), scale = T)
+
+# Create vector of experiment labels
+experiments <- rep(
+  c("Mock A549", "Mock A549 + ACE2", "SC2-inf-A549", "SC2-inf-A549 + ACE2", 
+    "SC2-inf-A549 + ACE2 + pt", "Lung healthy","Lung COVID19", "SC2-inf-Calu3",
+    "SC2-inf-NHBE", "Mock Calu3", "Mock NHBE"),
+  c(13, 6, 6, 6, 3, 2, 2, 3, 3, 3, 7))
+SC2infected <- c(rep("No",19), rep("Yes",15), rep("No",2), rep("Yes",8), rep("No",10))
+
+## add labels to pca obj
+pca.bulk$x <- add_column(as.data.frame(pca.bulk$x), experiments)
+pca.bulk$x <- add_column(as.data.frame(pca.bulk$x), SC2infected)
+
+## axes titles PC % explained var
+pc.axis <- function(PCnum){
+  paste0("PC",PCnum," (",
+         summary(pca.bulk)$importance[2,][PCnum]*100,
+         "% explained var.)")
+}
+
+## ggplot2 col-SC2inf  shape -experiments
+png(file = "./plots_SC2-inf-celllines-Lung/pca_SARS-CoV-2-inf-celllines_Lung_adj_PC34_colSC2_gg2.png", width = 800, height = 800)
+ggplot(pca.bulk$x, aes(x=PC3, y=PC4, group=experiments)) +
+  geom_point(size=4, aes(shape=experiments, color=SC2infected)) +
+  stat_ellipse(aes(color=SC2infected)) + # draw ellipses on bulk experiments
+  scale_shape_manual(values=c(17,2,1,13,9,0,19,16,20,18,15)) +
+  scale_color_manual(values = c("#af8dc3", "#7fbf7b")) + #purple and green
+  labs(x = pc.axis(3), y = pc.axis(4))
+dev.off()
+```
+
+![](imgs/pca/pca_SARS-CoV-2-inf-celllines_Lung_adj_PC12_shSC2_gg2.png)
+
+![](imgs/pca/pca_SARS-CoV-2-inf-celllines_Lung_adj_PC12_colSC2_gg2.png)
+
+\
+
+**Conclusion**
+
+
+
+
+***
+
+\
+
+### **PCA pseudo-bulk + bulk**
+
+\
+
+This section includes:
+
++ Load data
+* Join all data
+* Batch correction
+* PCA Visualization
+
+***
+
+\
+
+#### **Load data**
+
+* Bulk data experiments:
+
+  + "Mock_treated_A549"
+  + "Mock_treated_A549_w_vector_expressing_hACE2"
+  + "SARS-CoV-2_infected_A549"
+  + "SARS-CoV-2_infected_A549_w_vector_expressing_hACE2"
+  + "SARS-CoV-2_infected_A549_w_vector_expressing_hACE2_1hr_Ruxolitinib_pre-treatment"
+  + "Lung_biopsy_for_heatly_negative_control"
+  + "Lung_sample_from_postmortem_COVID-19_patient"
+  + "SARS-CoV-2_infected_Calu-3"
+  + "SARS-CoV-2_infected_NHBE"
+  + "Mock_treated_Calu-3"
+  + "Mock_treated_NHBE"
+
+See: **PCA in bulk** section.
+
+
+
+\
+
+* Normalized pseudo-bulk data:
+
+```{r eval=FALSE}
+# Load pseudo-bulk tpm counts
+tpm.counts <- as.data.frame(read.csv("./data/psbulk-tpm-counts.csv", sep = ","))
+tpm.counts <- column_to_rownames(tpm.counts, "X")
+```
+
+***
+
+#### **Join all data**
+
+\
+
+```{r eval=FALSE}
+## Join bulk and sc data
+tpm.counts <- t(tpm.counts) # tpm.counts is now rows genes, cols cell types
+tpm.counts.g <- rownames_to_column(as.data.frame(tpm.counts), var = "genes") # to use it in full_join
+bulk.g <- rownames_to_column(as.data.frame(bulk), var = "genes")
+bulk.g <- as.data.frame(bulk.g)
+tpm.counts.g <- as.data.frame(tpm.counts.g)
+merged.data <- full_join(bulk.g, tpm.counts.g, by = "genes")
+merged.data <- column_to_rownames(merged.data, var = "genes")
+merged.data <- as.data.frame(merged.data) # 182029     64
+merged.data[is.na(merged.data)] <- 0
+
+# head(merged.data)
+```
+
+_Note:_ This object was saved at `pca/data/` and can be load like this:
+
+```{r eval=FALSE}
+# write.csv(merged.data, file = "./data/SARS-CoV-2-inf-celllines_Lung-psbulk-merged_data.csv", quote = FALSE)
+# merged data psbulk and bulk
+merged.data <- as.data.frame(read.csv("./data/SARS-CoV-2-inf-celllines_Lung-psbulk-merged_data.csv", sep = ","))
+merged.data <- column_to_rownames(merged.data, var = "genes")
+```
+
+***
+
+#### **Batch correction**
+
+\
+
+In this case, batches are the 4 sequencing groups from bulk + 1 batch of single cell. Experimental conditions is not included in model because the group from single cell is the same as its batch.
+
+
+```{r eval=FALSE}
+## Correct batch effects
+batch <- c(batch, rep(5,10))
+merged.data <- as.matrix(merged.data) # convert to matrix to avoid error (combat returning list instead of matrix)
+adj.cts.all <- ComBat_seq(merged.data, batch = batch)
+```
+
+```
+Found 5 batches
+Using null model in ComBat-seq.
+Adjusting for 0 covariate(s) or covariate level(s)
+Estimating dispersions
+Fitting the GLM model
+Shrinkage off - using GLM estimates for parameters
+Adjusting the data
+```
+
+\
+
+Check object created:
+
+```{r eval=FALSE}
+object.size(adj.cts.all)/1e6 # 105.6 MB
+dim(adj.cts.all) # 182029     64
+class(adj.cts.all) # "matrix" "array"
+```
+
+
+_Note:_ This object was saved at `pca/data/` and can be load like this:
+
+```{r eval=FALSE}
+# save to file
+# write.csv(as.matrix(adj.cts.all), file = "./data/SARS-CoV-2-inf-celllines_Lung-psbulk-merged_data-adj.csv", quote = FALSE)
+adj.cts.all <- as.data.frame(read.csv("./data/SARS-CoV-2-inf-celllines_Lung-psbulk-merged_data-adj.csv", sep = ",", quote = ""))
+rownames(adj.cts.all) <- adj.cts.all$X
+adj.cts.all <- as.matrix(adj.cts.all[,-1])
+class(adj.cts.all) # matrix array
+```
+
+***
+
+#### **PCA Visualization**
+
+\
+
+##### **PCA without batch correction**
+
+\
+
+```{r eval=FALSE}
+## labels
+experiments <- rep(
+  c("MA549", "MA549+ACE2", "SC2-A549", "SC2-A549+ACE2", "SC2-A549+ACE2+pt",
+    "Lung-","LungCOVID", "SC2-Calu3", "SC2-NHBE", "MCalu3", "MNHBE"),
+  c(13, 6, 6, 6, 3, 2, 2, 3, 3, 3, 7))
+experiments <- c(experiments, str_subset(colnames(merged.data),"^GSM", negate = T)) # add cell types
+
+## PCA
+pca.all <- prcomp(t(merged.data), scale = TRUE)
+
+## add labels to pca obj
+pca.all$x <- add_column(as.data.frame(pca.all$x), experiments)
+
+## axes titles PC % explained var
+pc.axis <- function(PCnum){
+  paste0("PC",PCnum," (",
+         summary(pca.all)$importance[2,][PCnum]*100,
+         "% explained var.)")
+}
+
+## ggplot pca png -colexp, label some
+png(file = "./plots_SC2-inf-celllines-Lung/pca_SARS-CoV-2-inf-celllines_Lung_psebulk_noadj_PC23_labels_gg2.png",
+    width = 800, height = 800)
+ggplot(pca.all$x, aes(x=PC2, y=PC3, shape=experiments, colour=experiments)) +
+  geom_point(size=2) +
+  scale_shape_manual(name = "Experiment or Cell Type",
+                     values=c(3,25,17,2,1,13,9,0,4:8,19,16,20,18,15,10:12)) +
+  stat_ellipse(aes(color=experiments), show.legend = F) +
+  geom_text( aes(label=experiments, color=experiments), 
+             nudge_x = 18, nudge_y = 18, check_overlap = T, show.legend = F) +
+  labs(x = pc.axis(2), y = pc.axis(3)) +
+  theme(legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(size=4))) +
+  scale_colour_discrete(name="Experiment or Cell Type")
+dev.off()
+```
+
+![](imgs/pca/pca_SARS-CoV-2-inf-celllines_Lung_psebulk_noadj_PC12_labels_gg2.png)
+
+![](imgs/pca/pca_SARS-CoV-2-inf-celllines_Lung_psebulk_noadj_PC23_labels_gg2.png)
+
+***
+
+\
+
+##### **PCA with batch correction**
+
+\
+
+```{r}
+## PCA
+pca.all <- prcomp(t(adj.cts.all), scale = TRUE)
+
+## labels
+experiments <- rep(
+  c("MA549", "MA549+ACE2", "SC2-A549", "SC2-A549+ACE2", "SC2-A549+ACE2+pt",
+    "Lung-","LungCOVID", "SC2-Calu3", "SC2-NHBE", "MCalu3", "MNHBE"),
+  c(13, 6, 6, 6, 3, 2, 2, 3, 3, 3, 7))
+experiments <- c(experiments, str_subset(colnames(adj.cts.all),"^GSM", negate = T)) # add cell types
+epithelial <- c(rep("Yes", 34),rep("No",4),rep("Yes",16),"No","Yes", rep("No",8))
+
+## add labels to pca obj
+pca.all$x <- add_column(as.data.frame(pca.all$x), experiments)
+pca.all$x <- add_column(as.data.frame(pca.all$x), epithelial)
+
+## axes titles PC % explained var
+pc.axis <- function(PCnum){
+  paste0("PC",PCnum," (",
+         summary(pca.all)$importance[2,][PCnum]*100,
+         "% explained var.)")
+}
+```
+
+\
+
+**v1**
+
+Color: epithelial
+Shape: experiments
+Label: experiments
+
+```{r}
+## ggplot pca png -colexp, label some
+png(file = "./plots_SC2-inf-celllines-Lung/pca_SARS-CoV-2-inf-celllines_Lung_psebulk_adj_PC12_labels_gg2.png",
+    width = 800, height = 800)
+ggplot(pca.all$x, aes(x=PC1, y=PC2, shape=experiments, colour=experiments)) +
+  geom_point(size=2) +
+  scale_shape_manual(name = "Experiment or Cell Type",
+                     values=c(3,25,17,2,1,13,9,0,4:8,19,16,20,18,15,10:12)) +
+  stat_ellipse(aes(color=experiments), show.legend = F) +
+  geom_text( aes(label=experiments, color=experiments), 
+             nudge_x = 18, nudge_y = 18, check_overlap = T, show.legend = F) +
+  labs(x = pc.axis(1), y = pc.axis(2)) +
+  theme(legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(size=4))) +
+  scale_colour_discrete(name="Experiment or Cell Type")
+dev.off()
+```
+
+\
+
+**v2**
+
+Color: epithelial
+Shape: experiments
+Label: Epithelial cell type
+
+```{r}
+## ggplot pca png  
+png(file = "./plots_SC2-inf-celllines-Lung/pca_SARS-CoV-2-inf-celllines_Lung_psebulk_adj_PC12_colepi_label_gg2.png",
+    width = 800, height = 800)
+ggplot(pca.all$x, aes(x=PC1, y=PC2, group=experiments)) +
+  geom_point(size=3, aes(shape=experiments, color=epithelial)) +
+  stat_ellipse(aes(color=epithelial), show.legend = F) + # draw ellipses on bulk experiments
+  scale_shape_manual(name = "Experiment or Cell Type",
+                     values=c(3,25,17,2,1,13,9,0,4:8,19,16,20,18,15,10:12)) + 
+  geom_label(
+    data = pca.all$x %>% select(PC1,PC2,experiments, epithelial) %>% slice(56), # label only epithelial cell type
+    aes(label=experiments, color=epithelial), nudge_x = 18, nudge_y = 18, show.legend = F) +
+  labs(x = pc.axis(1), y = pc.axis(2)) +
+  theme(legend.position = "top") +
+  guides(colour = guide_legend(override.aes = list(size=4))) +
+  scale_colour_discrete(name="Epithelial")
+dev.off()
+```
+
+\
+
+* **PC1&2**
+
+**v1**
+![](imgs/pca/pca_SARS-CoV-2-inf-celllines_Lung_psebulk_adj_PC12_labels_gg2.png)
+
+**v2**
+![](imgs/pca/pca_SARS-CoV-2-inf-celllines_Lung_psebulk_adj_PC12_colepi_label_gg2.png)
+
+\
+
+* **PC2&3**
+
+**v1**
+![](imgs/pca/pca_SARS-CoV-2-inf-celllines_Lung_psebulk_adj_PC23_labels_gg2.png)
+
+**v2**
+![](imgs/pca/pca_SARS-CoV-2-inf-celllines_Lung_psebulk_adj_PC23_colepi_label_gg2.png)
+
+\
+
+* **PC3&4**
+
+**v1**
+![](imgs/pca/pca_SARS-CoV-2-inf-celllines_Lung_psebulk_adj_PC34_labels_gg2.png)
+
+**v2**
+![](imgs/pca/pca_SARS-CoV-2-inf-celllines_Lung_psebulk_adj_PC34_colepi_label_gg2.png)
+
+
+***
+
+### **Conclusions**
+
+
+\
+
+**PCA of bulk samples: Mock treated and SARS-CoV-2 infected samples**
+
+See below for notation*.
+
+\
+
+*Bulk notation:
+
+* `Mock A549` or `Mk` : Mock treated A459 cell lines samples
+* `Mock A549 + ACE2` or `Mk+ACE2` : Mock treated A459 cell lines with vector expression of ACE2 samples
+* `SC2-inf-A549` or `SC2`: SARS-CoV-2 infected A459 cell lines samples
+* `SC2-inf-A549 + ACE2` or `SC2+ACE2` : SARS-CoV-2 infected A459 cell lines with vector expression of ACE2 samples
+* `SC2-inf-A549 + ACE2 + pt` or `SC2+ACE2+pt` : SARS-CoV-2 infected A459 cell lines with vector expression of ACE2 with 1hr Ruxolitinib pre-treatment (IFN-I signaling blocked) samples
+
+\
+
+**PCA of pseudo-bulk + all bulk data. Bronchoalveolar immune cell types + treated cell lines**
+
+* PC1&2: 
+
+\
+
+### **Refs**
+
+\
+
+In collaboration with Leonardo Arteaga, Ana Betty Villaseñor Altamirano, Karen Nuñez Reza and Alejandra Medina Rivera.
+
+\
+
+**References:**
+
+[1] Liao, M., Liu, Y., Yuan, J., Wen, Y., Xu, G., Zhao, J., ... & Zhang, Z. (2020). Single-cell landscape of bronchoalveolar immune cells in patients with COVID-19. Nature medicine, 26(6), 842-844.
+
+[2] Blanco-Melo, D., Nilsson-Payant, B. E., Liu, W. C., Uhl, S., Hoagland, D., Møller, R., ... & Albrecht, R. A. (2020). Imbalanced host response to SARS-CoV-2 drives development of COVID-19. Cell, 181(5), 1036-1045.
+
+[3] Zhang, Y., Parmigiani, G., & Johnson, W. E. (2020). ComBat-seq: batch effect adjustment for RNA-seq count data. NAR genomics and bioinformatics, 2(3), lqaa078.
+
+[4] Foster, K. A., Oster, C. G., Mayer, M. M., Avery, M. L., & Audus, K. L. (1998). Characterization of the A549 cell line as a type II pulmonary epithelial cell model for drug metabolism. Experimental cell research, 243(2), 359-366.
+
+\
+
+**Programs and versions:**
+
+* R 4.0.2
+
+    packages:
+    + SingleCellExperiment
+    + scuttle
+    + Seurat
+    + tidyverse
+      + dplyr
+      + stringr
+      + ggplot2
+    + biomaRt
+    + ggbiplot
+    + sva
+      + ComBat-seq
+
+\
+
+_Last update: Oct 4th,2021_
+
+
