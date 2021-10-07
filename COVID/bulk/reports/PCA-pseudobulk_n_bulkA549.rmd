@@ -46,6 +46,7 @@ The lines of code below just produce two files that specify the study design (sa
 + `dates_samples_experiments.tsv` : project study design (Daniel Blanco et al, 2020)
 + `studydesign_date_mockA549.csv` : study design for mock treated A549 cell lines
 + `studydesign_date_SC2_inf_A549.csv` : study design for  SARS-CoV-2 infected A549 cell lines
++ `studydesign_date_Lung.csv` : study design for  Lung healthy biopsies and samples of postmortem COVID-19 patient.
 
 ***
 
@@ -106,6 +107,16 @@ grep "SARS-CoV-2_infected_A549" metadata/inter-files/dates_samples_experiments.t
 ```
 
 \
+
+**Subset for Lung samples:**
+
+
+```{bash eval=FALSE}
+echo 'release_dates,samples,experiments' > ../pca/data/studydesign_date_Lung.csv
+grep "Lung_" metadata/inter-files/dates_samples_experiments.tsv | perl -pe 's/\t/,/g' >> ../pca/data/studydesign_date_Lung.csv
+```
+
+***
 
 \
 
@@ -737,6 +748,148 @@ PC1 separates SARS-CoV-2 infected  (SC2-inf) samples with ACE2 expression from t
 **Conclusion**
 
 In PC1&2 plot, samples seem grouped by experimental conditions, except a little for SC2 infected samples, but this could be due to lack of effect of the virus given the low or non expression of ACE2. Groups disperse in a experimental wise manner, ie. it makes sense mock samples being close to non ACE2 infected samples, and close by PC1 to mock samples expressing ACE2, then SC2 infected samples with ACE2 expression and then those with INF-I block.
+
+
+***
+
+\
+
+#### **Mock + SC2 infected + Lung**
+
+\
+
+This section includes:
+
++ Join bulk samples in CLI
++ Clean data
++ Correct by batch effect
++ PCA visualization
+
+***
+
+##### **Join bulk samples in CLI**
+
+It is faster in bash
+
+at = `/mnt/Citosina/amedina/mpadilla/COVID19/Data/counts2`
+
+```{bash eval=FALSE}
+sed '1d' SARS-CoV-2_infected_A549_all-counts.csv > SARS-CoV-2_infected_A549_all-counts-nh.csv
+sed '1d' Lung_control_npostmortemCOVID19-counts.csv > Lung_control_npostmortemCOVID19-counts-nh.csv
+cat Mock_treated_A549_wnwo_ACE2-counts.csv SARS-CoV-2_infected_A549_all-counts-nh.csv Lung_control_npostmortemCOVID19-counts-nh.csv > Lung_all-Mock_A549_all-SC2_inf_A549_all-counts.csv
+# remove intermediate files
+rm SARS-CoV-2_infected_A549_all-counts-nh.csv Lung_control_npostmortemCOVID19-counts-nh.csv
+```
+
+##### **Clean data**
+
+```{r eval=FALSE}
+# Load merged data of all Mock_treated_A549 and SARS-CoV-2 infected A549 experiments
+inf.mock.lung <- as.data.frame(read.csv("./data/Lung_all-Mock_A549_all-SC2_inf_A549_all-counts.csv", sep = ","))
+dim(inf.mock.lung) # 
+# Load metadata
+meta.bulk <- as.data.frame(read.csv("/mnt/Citosina/amedina/mpadilla/COVID19/pca/data/studydesign_date_Mock-n-SC2-inf-A549-n-Lung.csv", sep = ","))
+
+
+## Clean data
+inf.mock.lung <- column_to_rownames(inf.mock.lung, var = "samples")
+inf.mock.lung <- inf.mock.lung[,which(apply(inf.mock.lung,2,var) != 0)] # taking off genes that were not expressed
+# dim(inf.mock.lung)
+#   38 170223
+inf.mock.lung <- t(inf.mock.lung)
+
+meta.bulk <- meta.bulk[match(colnames(inf.mock.lung), meta.bulk$samples),] # put meta in the same order as counts matrix
+
+head(inf.mock.lung)
+```
+
+
+***
+
+\
+
+##### **Batch correction**
+
+**Define batches and run combat-seq**
+
+```{r eval=FALSE}
+# Define batches (in this case by date)
+dates <- unique(meta.bulk$release_dates)
+batch <- meta.bulk$release_dates
+for (i in 1:length(dates)) {
+  batch <- str_replace(batch, dates[i], paste0(i))
+  i = i + 1
+}
+batch <- as.numeric(batch)
+# Define biological conditions
+exprmts <- rev(unique(meta.bulk$experiments))
+bio.cond <- meta.bulk$experiments
+for (i in 1:length(exprmts)) {
+  bio.cond <- str_replace(bio.cond, exprmts[i], paste0(i))
+  i = i + 1
+}
+bio.cond <- as.numeric(bio.cond)
+
+# Correction of batch effects with ComBat-seq
+library(sva) 
+adj.cts.both <- ComBat_seq(inf.mock.lung, 
+                           batch = batch, 
+                           group = bio.cond)
+```
+
+```
+Found 4 batches
+Using full model in ComBat-seq.
+Adjusting for 6 covariate(s) or covariate level(s)
+Estimating dispersions
+Fitting the GLM model
+Shrinkage off - using GLM estimates for parameters
+Adjusting the data
+```
+
+```{r eval=FALSE}
+# dim(adj.cts.both) 170223     38
+adj.cts.both <- adj.cts.both[which(apply(adj.cts.both,1,var) != 0),] # quit counts that transform to 0
+```
+
+\
+
+_Note:_ Object saved as and can be loaded as following.
+```{r eval=FALSE}
+# write.csv(adj.cts.both, file = "data/Lung_all-Mock_A549_all-SC2_inf_A549_all-counts-adj.csv", quote = F)
+
+```
+
+
+***
+
+##### **PCA Visualization**
+
+\
+
+```{r eval=FALSE}
+# Create vector of experiment labels
+experiments <- rep(
+  c("Mock A549", "Mock A549 + ACE2", "SC2-inf-A549", "SC2-inf-A549 + ACE2", 
+    "SC2-inf-A549 + ACE2 + pt", "Lung healthy","Lung COVID19"),
+  c(13, 6, 6, 6, 3, 2, 2))
+
+## ggbiplot version
+pcaA549lung <- prcomp(t(as.data.frame(adj.cts.both)), scale = T)
+png(file = "./plotsA549/pca_Lung-mock-SC2-inf-A549-all_PC34_ggbi.png", width = 800, height = 800)
+ggbiplot(pcaA549lung, group = experiments, var.axes = FALSE,  ellipse = TRUE, choices = 3:4)
+dev.off()
+```
+
+![](imgs/pca/pca_Lung-mock-SC2-inf-A549-all_PC12_ggbi.png)
+
+
+![](imgs/pca/pca_Lung-mock-SC2-inf-A549-all_PC34_ggbi.png)
+
+\
+
+**Conclusion**
+
 
 
 ***
@@ -1532,6 +1685,277 @@ The cluster of immune cells locates out of bulk predicted distributions but near
 
 Epithelial cell type locates near Mock samples with&without ACE2. Immune cell types still cluster together out of bulk
 distributions.
+
+
+***
+
+### **PCA pseudo-bulk + Mock + SC2 infected + Lung**
+
+\
+
+This section includes:
+
++ Load data
+* Join all data
+* Batch correction
+* PCA Visualization
+
+***
+
+\
+
+#### **Load data**
+
+* Bulk data experiments:
+    
+  + "Mock_treated_A549"                                                               
+  + "Mock_treated_A549_w_vector_expressing_hACE2"                                     
+  + "SARS-CoV-2_infected_A549"                                                        
+  + "SARS-CoV-2_infected_A549_w_vector_expressing_hACE2"                              
+  + "SARS-CoV-2_infected_A549_w_vector_expressing_hACE2_1hr_Ruxolitinib_pre-treatment"
+  + "Lung_biopsy_for_heatly_negative_control"
+  + "Lung_sample_from_postmortem_COVID-19_patient"
+
+Same as in **Mock + SC2 infected + Lung** subsection in **PCA in bulk** section.
+
+```{r eval=FALSE}
+# Load merged data of all Mock_treated_A549 and SARS-CoV-2 infected A549 experiments
+inf.mock.lung <- as.data.frame(read.csv("./data/Lung_all-Mock_A549_all-SC2_inf_A549_all-counts.csv", sep = ","))
+dim(inf.mock.lung) # 
+# Load metadata
+meta.bulk <- as.data.frame(read.csv("/mnt/Citosina/amedina/mpadilla/COVID19/pca/data/studydesign_date_Mock-n-SC2-inf-A549-n-Lung.csv", sep = ","))
+
+
+## Clean data
+inf.mock.lung <- column_to_rownames(inf.mock.lung, var = "samples")
+inf.mock.lung <- inf.mock.lung[,which(apply(inf.mock.lung,2,var) != 0)] # taking off genes that were not expressed
+# dim(inf.mock.lung)
+#   38 170223
+inf.mock.lung <- t(inf.mock.lung)
+
+meta.bulk <- meta.bulk[match(colnames(inf.mock.lung), meta.bulk$samples),] # put meta in the same order as counts matrix
+
+head(inf.mock.lung)
+```
+
+\
+
+* Normalized pseudo-bulk data:
+
+```{r eval=FALSE}
+# Load pseudo-bulk tpm counts
+tpm.counts <- as.data.frame(read.csv("./data/psbulk-tpm-counts.csv", sep = ","))
+tpm.counts <- column_to_rownames(tpm.counts, "X")
+```
+
+***
+
+#### **Join all data**
+
+\
+
+```{r eval=FALSE}
+## Join bulk and sc data
+tpm.counts <- t(tpm.counts) # tpm.counts is now rows genes, cols cell types
+tpm.counts.g <- rownames_to_column(as.data.frame(tpm.counts), var = "genes") # to use it in full_join
+inf.mock.lung.g <- rownames_to_column(as.data.frame(inf.mock.lung), var = "genes")
+inf.mock.lung.g <- as.data.frame(inf.mock.lung.g)
+tpm.counts.g <- as.data.frame(tpm.counts.g)
+merged.data <- full_join(inf.mock.lung.g, tpm.counts.g, by = "genes")
+merged.data <- column_to_rownames(merged.data, var = "genes")
+merged.data <- as.data.frame(merged.data) # dim 177654     48
+merged.data[is.na(merged.data)] <- 0
+
+# head(merged.data)
+```
+
+_Note:_ This object was saved at `pca/data/` and can be load like this:
+
+```{r eval=FALSE}
+# write.csv(merged.data, file = "./data/Lung_Mock_SC2-inf-A549_psbulk-merged_data.csv", quote = FALSE)
+# merged data psbulk and bulk
+merged.data <- as.data.frame(read.csv("./data/Mock_SC2-inf-A549_psbulk-merged_data.csv", sep = ","))
+merged.data <- column_to_rownames(merged.data, var = "genes")
+```
+
+***
+
+#### **Batch correction**
+
+\
+
+In this case, batches are the 4 sequencing groups from bulk + 1 batch of single cell. Experimental conditions is not included in model because the group from single cell is the same as its batch.
+
+Note: The next step takes ~7hrs.
+
+```{r eval=FALSE}
+## Correct batch effects
+batch <- c(batch, rep(5,10))
+merged.data <- as.matrix(merged.data) # convert to matrix to avoid error (combat returning list instead of matrix)
+adj.cts.all <- ComBat_seq(merged.data, batch = batch)
+```
+
+```
+Found 5 batches
+Using null model in ComBat-seq.
+Adjusting for 0 covariate(s) or covariate level(s)
+Estimating dispersions
+Fitting the GLM model
+Shrinkage off - using GLM estimates for parameters
+Adjusting the data
+```
+
+\
+
+Check object created:
+
+```{r eval=FALSE}
+object.size(adj.cts.all)/1e6 # 80.3 MB
+dim(adj.cts.all) # 177654     48
+class(adj.cts.all) # "matrix" "array"
+```
+
+
+_Note:_ This object was saved at `pca/data/` and can be load like this:
+
+```{r eval=FALSE}
+# save to file
+# write.csv(as.matrix(adj.cts.all), file = "./data/Lung_Mock_SC2-inf-A549_psbulk-merged_data-adj.csv", quote = FALSE)
+adj.cts.all <- as.data.frame(read.csv("./data/Mock_SC2-inf-A549_psbulk-merged_data-adj.csv", sep = ",", quote = ""))
+rownames(adj.cts.all) <- adj.cts.all$X
+adj.cts.all <- as.matrix(adj.cts.all[,-1])
+class(adj.cts.all) # matrix array
+```
+
+***
+
+#### **PCA Visualization**
+
+\
+
+##### **PCA without batch correction**
+
+\
+
+```{r eval=FALSE}
+## labels
+experiments <- rep(
+  c("Mk", "Mk+ACE2", "SC2", "SC2+ACE2", "SC2+ACE2+pt","Lung -","Lung COVID"),
+  c(13, 6, 6, 6, 3, 2, 2))
+experiments <- c(experiments, str_subset(colnames(merged.data),"^GSM", negate = T)) # add cell types
+## PCA
+pca.all <- prcomp(t(merged.data), scale = TRUE)
+
+## ggbiplot version
+png(file = "plotsA549/pca_Lung_Mock_SC2-inf-A549_all_psebulk_noadj_PC34_labels_ggbi.png", 
+    width = 800, height = 800) 
+ggbiplot(pca.all, group = experiments, var.axes = FALSE, obs.scale = 3, labels = experiments, 
+         ellipse = TRUE, choices = 3:4) # change choices for PCs
+dev.off()
+```
+
+![](imgs/pca/pca_Lung_Mock_SC2-inf-A549_all_psebulk_noadj_PC12_labels_ggbi.png)
+
+![](imgs/pca/pca_Lung_Mock_SC2-inf-A549_all_psebulk_noadj_PC23_labels_ggbi.png)
+
+![](imgs/pca/pca_Lung_Mock_SC2-inf-A549_all_psebulk_noadj_PC34_labels_ggbi.png)
+
+
+
+\
+
+##### **PCA with batch correction**
+
+\
+
+**v1 ggbiplot**
+
+```{r eval=FALSE}
+## labels
+experiments <- rep(
+  c("Mk", "Mk+ACE2", "SC2", "SC2+ACE2", "SC2+ACE2+pt","Lung -","Lung COVID"),
+  c(13, 6, 6, 6, 3, 2, 2))
+experiments <- c(experiments, str_subset(colnames(adj.cts.all),"^GSM", negate = T)) # add cell types
+epithelial <- c(rep("Yes", 34),rep("No",5),"Yes", rep("No",8))
+
+## PCA
+pca.all <- prcomp(t(adj.cts.all), scale = TRUE)
+
+## ggbiplot version
+png(file = "plotsA549/pca_Lung_Mock_SC2-inf-A549_all_psebulk_adj_PC34_labels_ggbi.png", width = 800, height = 800) 
+ggbiplot(pca.all, group = experiments, var.axes = FALSE, obs.scale = 4, labels = experiments,
+         ellipse = TRUE, choices = 3:4) # change choices for PCs
+dev.off()
+```
+
+\
+
+**v2 ggplot2**
+
+```{r}
+## PCA
+pca.all <- prcomp(t(adj.cts.all), scale = TRUE)
+
+## labels
+experiments <- rep(
+  c("Mock A549", "Mock A549+ACE2", "SC2-inf-A549", "SC2-inf-A549+ACE2", "SC2-inf-A549+ACE2+pt",
+    "Lung healthy","Lung COVID19"),
+  c(13, 6, 6, 6, 3))
+experiments <- c(experiments, str_subset(colnames(adj.cts.all),"^GSM", negate = T)) # add cell types
+epithelial <- c(rep("Yes", 34),rep("No",5),"Yes", rep("No",8))
+
+## add labels to pca obj
+pca.all$x <- add_column(as.data.frame(pca.all$x), experiments)
+pca.all$x <- add_column(as.data.frame(pca.all$x), epithelial)
+
+## axes titles PC % explained var
+pc.axis <- function(PCnum){
+  paste0("PC",PCnum," (",
+         summary(pca.all)$importance[2,][PCnum]*100,
+         "% explained var.)")
+}
+
+## ggplot pca png
+png(file = "./plotsA549/pca_Lung_Mock_SC2-inf-A549_all_psebulk_adj_PC34_colepi_label_gg2.png", 
+    width = 800, height = 800)
+ggplot(pca.all$x, aes(x=PC3, y=PC4, group=experiments)) + 
+  geom_point(size=4, aes(shape=experiments, color=epithelial)) +
+  stat_ellipse(aes(color=epithelial)) + # draw ellipses on bulk experiments
+  scale_shape_manual(values=c(0:1,11,8,2:3,15,17,4:6,18:20,7,13,14)) + # group shapes, fill bulk and empty pseudobulk
+  geom_text(
+    data = pca.all$x %>% select(PC3,PC4,experiments, epithelial) %>% slice(40), # label only epithelial cell type
+    aes(label=experiments, color=epithelial), nudge_x = 20, nudge_y = 20) +
+  labs(x = pc.axis(3), y = pc.axis(4))
+dev.off()
+```
+
+\
+
+* PC1&2
+
+**v1**
+![](imgs/pca/pca_Lung_Mock_SC2-inf-A549_all_psebulk_adj_PC12_labels_ggbi.png)
+
+**v2**
+![](imgs/pca/pca_Lung_Mock_SC2-inf-A549_all_psebulk_adj_PC12_colepi_label_gg2.png)
+
+* PC2&3
+
+**v1**
+![](imgs/pca/pca_Lung_Mock_SC2-inf-A549_all_psebulk_adj_PC23_labels_ggbi.png)
+
+**v2**
+![](imgs/pca/pca_Lung_Mock_SC2-inf-A549_all_psebulk_adj_PC23_colepi_label_gg2.png)
+
+* PC3&4
+
+**v1**
+![](imgs/pca/pca_Lung_Mock_SC2-inf-A549_all_psebulk_adj_PC34_labels_ggbi.png)
+
+**v2**
+![](imgs/pca/pca_Lung_Mock_SC2-inf-A549_all_psebulk_adj_PC34_colepi_label_gg2.png)
+
+
 
 
 ***
