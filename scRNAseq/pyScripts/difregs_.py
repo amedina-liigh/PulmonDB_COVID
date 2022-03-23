@@ -1,3 +1,4 @@
+import re
 import math
 import numpy as np
 import pandas as pd
@@ -12,90 +13,183 @@ from scipy.stats import ks_2samp
 from statsmodels.stats.multitest import multipletests as multest
 from itertools import compress
 
-# AQUÍ LEO LOS DATOS Y LES AGREGO INFO, TAMBIÉN LOS FILTRO PORQUE EL DATASET TIENE MÁS CÉLULAS QUE LAS QUE VIENEN EN LA METADATA
-exp_mat_both = sc.read_loom("/home/amedina/amedinalab/larteaga/COVID19/pyscenic/authors/recuperacion/avg3/exp_mat_both.loom", validate=False)
+## WILCOXON TEST CONTRL VS COVID
+# Performs wilcoxon u test of regulon activity (using auc matrix) between control and covid samples
+#  for each celltype or source tissue
+def mwuAUC(auc1,auc2):
+    print("Performing Mann Whitney Test on ...")
+    celltypes = sorted(list(auc1['source'].unique()))
+    pvalues = {}
+    for i in celltypes:
+        print(i)
+        cellTypePvalueVector = []
+        for j in range((len(auc1.columns)-1)):
+          #print(j)
+          res = mwu(auc1[auc1['source'] == i].iloc[:,j],auc2[auc2['source'] == i].iloc[:,j], method = "asymptotic")
+          cellTypePvalueVector.append(res[1])
+        pvalues[i] = cellTypePvalueVector
+    return pvalues
 
-cell_annotations_both = pd.read_csv("/home/amedina/amedinalab/larteaga/COVID19/pyscenic/authors/recuperacion/all.cell.annotation.meta.txt",sep="\t")
 
-exp_mat_both = exp_mat_both[exp_mat_both.obs.index.isin(cell_annotations_both['ID'])]
+## KOLMOGOROV TEST CONTROL VS COVID
+def ksAUC(auc1,auc2):
+    print("Performing Kolmogrov Test on ...")
+    celltypes = sorted(list(auc1['source'].unique()))
+    pvalues = {}
+    for i in celltypes:
+     print(i)
+     cellTypePvalueVector = []
+     for j in range((len(auc1.columns)-1)):
+       res = ks_2samp(auc1[auc1['source'] == i].iloc[:,j],auc2[auc2['source'] == i].iloc[:,j])
+       cellTypePvalueVector.append(res[1])
+     pvalues[i] = cellTypePvalueVector
+    return pvalues
 
-exp_mat_both.obs['celltype'] = list(cell_annotations_both[['celltype']].iloc[:,0])
-exp_mat_both.obs['ctc'] = [i+'_'+str(j) for i,j in zip(list(cell_annotations_both[['celltype']].iloc[:,0]),list(cell_annotations_both[['disease']].iloc[:,0]))]
+# Functions adapted for celllines samples
+# Celllines mocks are used for several experiments (different infections)
+def mwuAUCcelllines(auc_cntrl,auc_case):
+    print("Performing Mann Whitney Test on celllines ...")
+    cases = sorted(list(auc_case['source'].unique()))
+    celllines = sorted(list(auc_cntrl['cellline'].unique()))
+    celllines.reverse() # more especific names should go first to pair with cases correctly
+    pvalues = {}
+    for i in cases:
+        print(i)
+        # check which cellline is to call corresponding controls
+        for c in celllines:
+         pttrn = re.compile(c)
+         if pttrn.search(i):
+             break
+        print("\tcorresponding control : " + c)
+        regulonsPvalueVector = []
+        for j in range((len(auc_case.columns)-1)):
+            #print(j)
+            res = mwu(auc_case[auc_case['source'] == i].iloc[:,j],auc_cntrl[auc_cntrl['cellline'] == c].iloc[:,j], method = "asymptotic")
+            regulonsPvalueVector.append(res[1])
+        pvalues[i] = casesPvalueVector
+    return pvalues
 
-lf = lp.connect("/home/amedina/amedinalab/larteaga/COVID19/pyscenic/authors/recuperacion/avg3/SCENIC_final_multi.loom", mode='r+', validate=False)
-auc_both_multi = pd.DataFrame(lf.ca.RegulonsAUC, index=lf.ca.CellID)
+def ksAUCcelllines(auc_cntrl,auc_case):
+    print("Performing Kolmogrov Test on celllines ...")
+    cases = sorted(list(auc_case['source'].unique()))
+    celllines = sorted(list(auc_cntrl['cellline'].unique()))
+    celllines.reverse()
+    pvalues = {}
+    for i in cases:
+        print(i)
+        regulonsPvalueVector = []
+        # check which cellline is to call corresponding controls
+        for c in celllines:
+         pttrn = re.compile(c)
+         if pttrn.search(i):
+             break
+        for j in range((len(auc_case.columns)-1)):
+            res = ks_2samp(auc_case[auc_case['source'] == i].iloc[:,j],auc_cntrl[auc_cntrl['cellline'] == c].iloc[:,j])
+            regulonsPvalueVector.append(res[1])
+        pvalues[i] = casesPvalueVector
+    return pvalues
+
+#def main():
+#############################
+## Read input and clean data
+# input vars: path_meta, path_scenic_loom, filter_auc, celllines
+
+# Read metadata or annotations ## first col is samples, second is source (of sample), third is disease flag
+meta = pd.read_csv( path_meta, sep = ",")
+if celllines :
+    metadf = pd.DataFrame(meta).set_axis(['ID','source','disease','cellline'],axis=1)
+else :
+    metadf = pd.DataFrame(meta).set_axis(['ID','source','disease'],axis=1)
+# dictionaries of different ways to group samples
+meta_dis = pd.Series(data=dict(metadf[['ID','disease']].values), index=list(metadf['ID'])) # format as series
+groups = list(metadf['source'])
+    # concatenate source and disease state
+for a in range(len(groups)):
+    groups[a] = groups[a]+list(metadf['disease'])[a]
+
+metadf['groups'] = groups
+meta_group = pd.Series(data=dict(metadf[['ID','groups']].values), index=list(metadf['ID'])) # format as series
+
+# Retrive regulon activity matrix (auc_mtx) from pyscenic
+lf = lp.connect(path_scenic_loom, mode='r+', validate=False)
+auc_mtx_multi = pd.DataFrame(lf.ca.RegulonsAUC, index=lf.ca.CellID)
 lf.close()
 
-auc_both_multi = auc_both_multi[auc_both_multi.index.isin(cell_annotations_both['ID'])]
+# in case filtering of auc_mtrx is necessary
+if filter_auc:
+    # filter out cells not included in metadata file
+    auc_mtx_multi = auc_mtx_multi[auc_mtx_multi.index.isin(meta['ID'])]
 
-# AQUÍ SACO LOS RSS
-rss_both = regulon_specificity_scores(auc_both_multi, exp_mat_both.obs.celltype)
-rss_both_ctc = regulon_specificity_scores(auc_both_multi, exp_mat_both.obs.ctc)
+#############################
+## Compute RSS
 
-# HAGO LAS MATRICES DE CONTROL Y COVID A PARTIR DE LA DE LOS DATOS INTEGRADOS
-cell_annotations_control = cell_annotations_both[cell_annotations_both['disease']=='N']
-cell_annotations_cov = cell_annotations_both[cell_annotations_both['disease']=='Y']
+print("Computing RSS ...")
 
-auc_control = auc_both_multi[auc_both_multi.index.isin(cell_annotations_control['ID'])]
-auc_cov = auc_both_multi[auc_both_multi.index.isin(cell_annotations_cov['ID'])]
+# RSScores for each source tissue or celltype
+rss_group = regulon_specificity_scores(auc_mtx_multi, meta_group)
+# RSScores for control and covid
+rss_dis = regulon_specificity_scores(auc_mtx_multi, meta_dis)
 
-# Sort regs alphabetically
+#############################
+## Format data prior computation of Differentially Activated Regulons (DAR)
+
+# Split annotations for control and cases
+meta_control = meta[meta['disease']=='N']
+meta_cov = meta[meta['disease']=='Y']
+
+# Split auc matrix into controls and cases
+auc_control = auc_mtx_multi[auc_mtx_multi.index.isin(meta_control['ID'])] ## auc matrix subset for control cells
+auc_cov = auc_mtx_multi[auc_mtx_multi.index.isin(meta_cov['ID'])] ## auc matrix subset for covid cells
+
+# Sort regulons alphabetically
 auc_control = auc_control.reindex(sorted(auc_control.columns), axis=1)
 auc_cov = auc_cov.reindex(sorted(auc_cov.columns), axis=1)
 
-# Add cell type info
-auc_control['celltype'] = list(cell_annotations_control['celltype'])
-auc_cov['celltype'] = list(cell_annotations_cov['celltype'])
+# Add cell type or tissue or experiment info
+auc_control['source'] = list(meta_control['source'])
+auc_cov['source'] = list(meta_cov['source'])
 
-# Remove the Neutrophil cell type form cov patients samples because it is not present in control samples
-auc_cov = auc_cov[auc_cov['celltype'] != 'Neutrophil']
+# Add cellline info
+if celllines:
+    auc_control['cellline'] = list(meta_control['cellline'])
 
-# AQUÍ HAGO UNA FUNCIÓN QUE VA A IR HACIENDO EL WILCOXON TEST CONTRL VS COVID EN CADA TIPO CELULAR
-# USANDO LOS DATOS DE LAS CÉLULAS DE LA MATRIX DE ACTIVIDADES DE LOS REGULONES, LA ÚLTIMA QUE ARROJA SCENIC
-def mwuAUC(auc1,auc2):
-  celltypes = sorted(list(auc1['celltype'].unique()))
-  pvalues = {}
-  for i in celltypes:
-    print(i)
-    cellTypePvalueVector = []
-    for j in range((len(auc1.columns)-1)):
-      #print(j)
-      res = mwu(auc1[auc1['celltype'] == i].iloc[:,j],auc2[auc2['celltype'] == i].iloc[:,j], method = "asymptotic")
-      cellTypePvalueVector.append(res[1])
-    pvalues[i] = cellTypePvalueVector
-  return pvalues
+#############################
+## WILCOXON TEST CONTRL VS COVID, adjust pvalues
 
-pvalues = mwuAUC(auc_control,auc_cov)
+# Get pvalues from test
+if celllines:
+    pvalues = mwuAUCcelllines(auc_control,auc_cov)
+else :
+    pvalues = mwuAUC(auc_control,auc_cov)
+
+print("Adjusting pvalues ...")
 
 # AJUSTO LOS PVALUES Y TAMBIÉN LOS HAGO -LOG10 Y LOS QUE PASEN EL LÍMITE DEL PRIMER CUARTIL
-
+# Adjust pvalues for multiple testing
 pvalues_adjusted = {}
 for i in pvalues:
   pvalues_adjusted[i] = multest(pvals = pvalues[i],method = 'fdr_bh')[1]
 
-# -LOG10
+# -LOG10 of adjusted pvalues
 pvalues_adjusted_minusLog10 = {}
 for i in pvalues_adjusted:
   pvalues_adjusted_minusLog10[i] = list(map(lambda x: -1*math.log10(x) if x !=0 else x,pvalues_adjusted[i]))
-  
+
 # LÍMITE DEL PRIMER CUARTIL
 regsPass_1stQ = {}
 for i in pvalues_adjusted:
   regsPass_1stQ[i] = list(pvalues_adjusted[i] <= np.quantile(pvalues_adjusted[i],.25))
 
-# AQUÍ EN VEZ DEL WILCONXON, USO EL TEST DE KOLMOGOROV. NO HACE FALTA QUE USES LOS DOS, CON UNO BASTA
-def ksAUC(auc1,auc2):
-  celltypes = sorted(list(auc1['celltype'].unique()))
-  pvalues = {}
-  for i in celltypes:
-    cellTypePvalueVector = []
-    for j in range((len(auc1.columns)-1)):
-      res = ks_2samp(auc1[auc1['celltype'] == i].iloc[:,j],auc2[auc2['celltype'] == i].iloc[:,j])
-      cellTypePvalueVector.append(res[1])
-    pvalues[i] = cellTypePvalueVector
-  return pvalues
+#############################
+## KOLMOGOROV TEST CONTROL VS COVID
 
-pvalues2 = ksAUC(auc_control,auc_cov)
+# Get pvalues from test
+if celllines:
+    pvalues2 = ksAUCcelllines(auc_control,auc_cov)
+else :
+    pvalues2 = ksAUC(auc_control,auc_cov)
+
+print("Adjusting pvalues ...")
 
 pvalues_adjusted2 = {}
 for i in pvalues2:
@@ -109,3 +203,5 @@ regsPass_1stQ2 = {}
 for i in pvalues_adjusted2:
   regsPass_1stQ2[i] = list(pvalues_adjusted2[i] <= np.quantile(pvalues_adjusted2[i],.25))
 
+#if __name__ == '__main__':
+#    main()
