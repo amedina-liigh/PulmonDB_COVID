@@ -16,18 +16,32 @@ from itertools import compress
 ## WILCOXON TEST CONTRL VS COVID
 # Performs wilcoxon u test of regulon activity (using auc matrix) between control and covid samples
 #  for each celltype or source tissue
-def mwuAUC(auc1,auc2):
+def mwuAUC(auc1,auc2, directionals=0):
     print("Performing Mann Whitney Test on ...")
     celltypes = sorted(list(auc1['source'].unique()))
     pvalues = {}
     for i in celltypes:
         print(i)
-        cellTypePvalueVector = []
+        # make lists for different tests if directional alternative hypothesis is chosen
+        if directionals :
+            regulonsPvalueVectorUp = []
+            regulonsPvalueVectorDown = []
+        else :
+            cellTypePvalueVector = [] # non-directional case
         for j in range((len(auc1.columns)-1)):
           #print(j)
-          res = mwu(auc1[auc1['source'] == i].iloc[:,j],auc2[auc2['source'] == i].iloc[:,j], method = "asymptotic")
-          cellTypePvalueVector.append(res[1])
-        pvalues[i] = cellTypePvalueVector
+          if directionals :
+              res = mwu(auc1[auc1['source'] == i].iloc[:,j],auc2[auc2['source'] == i].iloc[:,j], method = "asymptotic", alternative = "greater")
+              regulonsPvalueVectorUp.append(res[1])
+              res = mwu(auc1[auc1['source'] == i].iloc[:,j],auc2[auc2['source'] == i].iloc[:,j], method = "asymptotic", alternative = "less")
+              regulonsPvalueVectorDown.append(res[1])
+          else :
+              res = mwu(auc1[auc1['source'] == i].iloc[:,j],auc2[auc2['source'] == i].iloc[:,j], method = "asymptotic")
+              cellTypePvalueVector.append(res[1])
+        if directionals :
+            pvalues[i] = [regulonsPvalueVectorUp,regulonsPvalueVectorDown]
+        else :
+            pvalues[i] = cellTypePvalueVector
     return pvalues
 
 
@@ -38,16 +52,29 @@ def ksAUC(auc1,auc2):
     pvalues = {}
     for i in celltypes:
      print(i)
-     cellTypePvalueVector = []
+     if directionals :
+         regulonsPvalueVectorUp = []
+         regulonsPvalueVectorDown = []
+     else :
+         cellTypePvalueVector = [] # non-directional case
      for j in range((len(auc1.columns)-1)):
-       res = ks_2samp(auc1[auc1['source'] == i].iloc[:,j],auc2[auc2['source'] == i].iloc[:,j])
-       cellTypePvalueVector.append(res[1])
-     pvalues[i] = cellTypePvalueVector
+        if directionals :
+            res = ks_2samp(auc1[auc1['source'] == i].iloc[:,j],auc2[auc2['source'] == i].iloc[:,j], alternative = "greater")
+            regulonsPvalueVectorUp.append(res[1])
+            res = ks_2samp(auc1[auc1['source'] == i].iloc[:,j],auc2[auc2['source'] == i].iloc[:,j], alternative = "less")
+            regulonsPvalueVectorDown.append(res[1])
+        else :
+            res = ks_2samp(auc1[auc1['source'] == i].iloc[:,j],auc2[auc2['source'] == i].iloc[:,j])
+            cellTypePvalueVector.append(res[1])
+     if directionals :
+         pvalues[i] = [regulonsPvalueVectorUp,regulonsPvalueVectorDown]
+     else :
+         pvalues[i] = cellTypePvalueVector
     return pvalues
 
 # Functions adapted for celllines samples
 # Celllines mocks are used for several experiments (different infections)
-def mwuAUCcelllines(auc_cntrl,auc_case):
+def mwuAUCcelllines(auc_cntrl,auc_case, directionals=0):
     print("Performing Mann Whitney Test on celllines ...")
     cases = sorted(list(auc_case['source'].unique()))
     celllines = sorted(list(auc_cntrl['cellline'].unique()))
@@ -61,15 +88,29 @@ def mwuAUCcelllines(auc_cntrl,auc_case):
          if pttrn.search(i):
              break
         print("\tcorresponding control : " + c)
-        regulonsPvalueVector = []
+        # make lists for different tests if directional alternative hypothesis is chosen
+        if directionals :
+            regulonsPvalueVectorUp = []
+            regulonsPvalueVectorDown = []
+        else :
+            regulonsPvalueVector = [] # non-directional case
         for j in range((len(auc_case.columns)-1)):
             #print(j)
-            res = mwu(auc_case[auc_case['source'] == i].iloc[:,j],auc_cntrl[auc_cntrl['cellline'] == c].iloc[:,j], method = "asymptotic")
-            regulonsPvalueVector.append(res[1])
-        pvalues[i] = casesPvalueVector
+            if directionals :
+                res = mwu(auc_case[auc_case['source'] == i].iloc[:,j],auc_cntrl[auc_cntrl['cellline'] == c].iloc[:,j], alternative = "greater")
+                regulonsPvalueVectorUp.append(res[1])
+                res = mwu(auc_case[auc_case['source'] == i].iloc[:,j],auc_cntrl[auc_cntrl['cellline'] == c].iloc[:,j], alternative = "less")
+                regulonsPvalueVectorDown.append(res[1])
+            else :
+                res = mwu(auc_case[auc_case['source'] == i].iloc[:,j],auc_cntrl[auc_cntrl['cellline'] == c].iloc[:,j])
+                regulonsPvalueVector.append(res[1])
+        if directionals :
+            pvalues[i] = [regulonsPvalueVectorUp,regulonsPvalueVectorDown]
+        else :
+            pvalues[i] = regulonsPvalueVector
     return pvalues
 
-def ksAUCcelllines(auc_cntrl,auc_case):
+def ksAUCcelllines(auc_cntrl,auc_case, directionals=0):
     print("Performing Kolmogrov Test on celllines ...")
     cases = sorted(list(auc_case['source'].unique()))
     celllines = sorted(list(auc_cntrl['cellline'].unique()))
@@ -77,17 +118,38 @@ def ksAUCcelllines(auc_cntrl,auc_case):
     pvalues = {}
     for i in cases:
         print(i)
-        regulonsPvalueVector = []
+        # make lists for different tests if directional alternative hypothesis is chosen
+        if directionals :
+            regulonsPvalueVectorUp = []
+            regulonsPvalueVectorDown = []
+        else :
+            regulonsPvalueVector = [] # non-directional case
         # check which cellline is to call corresponding controls
         for c in celllines:
          pttrn = re.compile(c)
          if pttrn.search(i):
              break
         for j in range((len(auc_case.columns)-1)):
-            res = ks_2samp(auc_case[auc_case['source'] == i].iloc[:,j],auc_cntrl[auc_cntrl['cellline'] == c].iloc[:,j])
-            regulonsPvalueVector.append(res[1])
-        pvalues[i] = casesPvalueVector
+            if directionals :
+                res = ks_2samp(auc_case[auc_case['source'] == i].iloc[:,j],auc_cntrl[auc_cntrl['cellline'] == c].iloc[:,j], alternative = "greater")
+                regulonsPvalueVectorUp.append(res[1])
+                res = ks_2samp(auc_case[auc_case['source'] == i].iloc[:,j],auc_cntrl[auc_cntrl['cellline'] == c].iloc[:,j], alternative="less")
+                regulonsPvalueVectorDown.append(res[1])
+            else :
+                res = ks_2samp(auc_case[auc_case['source'] == i].iloc[:,j],auc_cntrl[auc_cntrl['cellline'] == c].iloc[:,j])
+                regulonsPvalueVector.append(res[1])
+        if directionals :
+            pvalues[i] = [regulonsPvalueVectorUp,regulonsPvalueVectorDown]
+        else :
+            pvalues[i] = regulonsPvalueVector
     return pvalues
+
+def adj_pvals(pvalues) :
+    print("Adjusting pvalues ...")
+    pvalues_adjusted = {}
+    for i in pvalues:
+      pvalues_adjusted[i] = multest(pvals = pvalues[i],method = 'fdr_bh')[1]
+    return pvalues_adjusted
 
 #def main():
 #############################
@@ -116,9 +178,23 @@ auc_mtx_multi = pd.DataFrame(lf.ca.RegulonsAUC, index=lf.ca.CellID)
 lf.close()
 
 # in case filtering of auc_mtrx is necessary
-if filter_auc:
+if filter_auc_samples:
     # filter out cells not included in metadata file
     auc_mtx_multi = auc_mtx_multi[auc_mtx_multi.index.isin(meta['ID'])]
+
+# apply regulons counts (from scenic iterations) cutoff
+if filter_auc_regs :
+    # read regulons.tsv multiruns output file
+    reg_counts = pd.read_csv( path_regulons_counts, sep = "\t").set_axis(['regulon','count'],axis=1)
+    # choose min_reg_counts
+    if min_reg_counts is None:
+        min_reg_counts = reg_counts['count'][0]/10
+    # regs that pass cutoff
+    regs = list(reg_counts[reg_counts['count'] >= min_reg_counts]['regulon'])
+    regs_ = []
+    for reg in regs: regs_.append(re.sub("\(\+\)","_(+)",reg))
+    # apply regs filter
+    auc_mtx_multi = auc_mtx_multi.T[auc_mtx_multi.columns.isin(regs_)].T
 
 #############################
 ## Compute RSS
@@ -156,52 +232,81 @@ if celllines:
 #############################
 ## WILCOXON TEST CONTRL VS COVID, adjust pvalues
 
-# Get pvalues from test
-if celllines:
-    pvalues = mwuAUCcelllines(auc_control,auc_cov)
+# Get pvalues from test for DA down and upregulated separetely
+if test_sep :
+    if celllines:
+        pvalues_down = mwuAUCcelllines(auc_cov,auc_control, directionals=1)
+    else :
+        pvalues_down = mwuAUC(auc_cov,auc_control, directionals=1)
 else :
-    pvalues = mwuAUC(auc_control,auc_cov)
+    # Get pvalues from test for DA down or upregulated
+    if celllines:
+        pvalues = mwuAUCcelllines(auc_control,auc_cov)
+    else :
+        pvalues = mwuAUC(auc_control,auc_cov)
 
-print("Adjusting pvalues ...")
+# split dictionary if directional test were performed to facilitate the downstream pipeline
+if test_sep :
+    pvalues_up = {}
+    pvalues_down = {}
+    for i in pvalues:
+        pvalues_up[i] = pvalues[i][0]
+        pvalues_down[i] = pvalues[i][1]
 
 # AJUSTO LOS PVALUES Y TAMBIÉN LOS HAGO -LOG10 Y LOS QUE PASEN EL LÍMITE DEL PRIMER CUARTIL
 # Adjust pvalues for multiple testing
-pvalues_adjusted = {}
-for i in pvalues:
-  pvalues_adjusted[i] = multest(pvals = pvalues[i],method = 'fdr_bh')[1]
+if test_sep :
+    pvalues_up_adjusted = adj_pvals(pvalues_up)
+    pvalues_down_adjusted = adj_pvals(pvalues_down)
+else :
+    pvalues_adjusted = adj_pvals(pvalues)
 
-# -LOG10 of adjusted pvalues
-pvalues_adjusted_minusLog10 = {}
-for i in pvalues_adjusted:
-  pvalues_adjusted_minusLog10[i] = list(map(lambda x: -1*math.log10(x) if x !=0 else x,pvalues_adjusted[i]))
+    # -LOG10 of adjusted pvalues
+    pvalues_adjusted_minusLog10 = {}
+    for i in pvalues_adjusted:
+      pvalues_adjusted_minusLog10[i] = list(map(lambda x: -1*math.log10(x) if x !=0 else x,pvalues_adjusted[i]))
 
-# LÍMITE DEL PRIMER CUARTIL
-regsPass_1stQ = {}
-for i in pvalues_adjusted:
-  regsPass_1stQ[i] = list(pvalues_adjusted[i] <= np.quantile(pvalues_adjusted[i],.25))
+    # LÍMITE DEL PRIMER CUARTIL
+    regsPass_1stQ = {}
+    for i in pvalues_adjusted:
+      regsPass_1stQ[i] = list(pvalues_adjusted[i] <= np.quantile(pvalues_adjusted[i],.25))
 
 #############################
 ## KOLMOGOROV TEST CONTROL VS COVID
 
 # Get pvalues from test
-if celllines:
-    pvalues2 = ksAUCcelllines(auc_control,auc_cov)
+if test_sep :
+    if celllines:
+        pvalues2 = ksAUCcelllines(auc_control,auc_cov, directionals=1)
+    else :
+        pvalues2 = ksAUC(auc_control,auc_cov, directionals=1)
 else :
-    pvalues2 = ksAUC(auc_control,auc_cov)
+    if celllines:
+        pvalues2 = ksAUCcelllines(auc_control,auc_cov)
+    else :
+        pvalues2 = ksAUC(auc_control,auc_cov)
 
-print("Adjusting pvalues ...")
+# split dictionary if directional test were performed to facilitate the downstream pipeline
+if test_sep :
+    pvalues2_up = {}
+    pvalues2_down = {}
+    for i in pvalues2:
+        pvalues2_up[i] = pvalues[i][0]
+        pvalues2_down[i] = pvalues[i][1]
 
-pvalues_adjusted2 = {}
-for i in pvalues2:
-  pvalues_adjusted2[i] = multest(pvals = pvalues2[i],method = 'fdr_bh')[1]
+if test_sep :
+    pvalues2_up_adjusted = adj_pvals(pvalues2_up)
+    pvalues2_down_adjusted = adj_pvals(pvalues2_down)
+else :
+    pvalues_adjusted2 = adj_pvals(pvalues2)
 
-pvalues_adjusted_minusLog102 = {}
-for i in pvalues_adjusted2:
-  pvalues_adjusted_minusLog102[i] = list(map(lambda x: -1*math.log10(x) if x !=0 else x,pvalues_adjusted2[i]))
+    pvalues_adjusted_minusLog102 = {}
+    for i in pvalues_adjusted2:
+      pvalues_adjusted_minusLog102[i] = list(map(lambda x: -1*math.log10(x) if x !=0 else x,pvalues_adjusted2[i]))
 
-regsPass_1stQ2 = {}
-for i in pvalues_adjusted2:
-  regsPass_1stQ2[i] = list(pvalues_adjusted2[i] <= np.quantile(pvalues_adjusted2[i],.25))
+    regsPass_1stQ2 = {}
+    for i in pvalues_adjusted2:
+      regsPass_1stQ2[i] = list(pvalues_adjusted2[i] <= np.quantile(pvalues_adjusted2[i],.25))
 
 #if __name__ == '__main__':
 #    main()
