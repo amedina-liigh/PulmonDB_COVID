@@ -24,19 +24,22 @@ regsPerFDRthr <- function(pvalues.df, fdr_lowth = 0.1, fdr_upthr = 0.2){
 ### get the FDRs threshold to get a min number of regulons
 ###   limit.range.at : if at a given FDR no regulons are retrieve, just take whichever FDR that first retrieve at least 1 regulon
 ###                     specify col in thresholds table 
-getChosenFDRth <- function(FDRthresholds, min.regs = 100, limit.range.at = ncol(FDRthresholds)){
+getChosenFDRth <- function(FDRthresholds, min.regs = c(100,1), limit.range.at = nrow(FDRthresholds)){
   
   # at which minimal fdr are at least n regulons
-  chosen <- apply(FDRthresholds,1,function(x) which(as.double(x[1:limit.range.at]) >= min.regs)[1])
+  chosen <- apply(FDRthresholds,1,function(x) which(as.double(x[1:limit.range.at]) >= min.regs[1])[1])
   # for those that not the min was found, change min regs to 1
   lowns <- which(is.na(chosen))
-  chosen[lowns] <- apply(FDRthresholds[lowns,],1,function(x) which(as.double(x) >= 1)[1])
+  chosen[lowns] <- apply(FDRthresholds[lowns,],1,function(x) which(as.double(x) >= min.regs[2])[1])
+  # if not the min was found, take the minimal val founnd
+  lowns <- which(is.na(chosen))
+  chosen[lowns] <- apply(FDRthresholds[lowns,],1,function(x) which(as.double(x) >= min(FDRthresholds))[1])
   chosen <- as.data.frame(chosen)
   
   # get corresponding threshold
   chosen['FDR_thr'] <- colnames(FDRthresholds)[chosen$chosen]
   # add number of regulons (also equal to the number of accepted pvalues adj)
-  nregs <- 0
+  nregs <- c()
   for (i in 1:nrow(chosen)) {
     nregs[i] <- FDRthresholds[i,chosen$chosen[i]]
   }
