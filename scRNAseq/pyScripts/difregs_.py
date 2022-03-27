@@ -235,9 +235,9 @@ if celllines:
 # Get pvalues from test for DA down and upregulated separetely
 if test_sep :
     if celllines:
-        pvalues_down = mwuAUCcelllines(auc_cov,auc_control, directionals=1)
+        pvalues = mwuAUCcelllines(auc_control,auc_cov, directionals=1)
     else :
-        pvalues_down = mwuAUC(auc_cov,auc_control, directionals=1)
+        pvalues = mwuAUC(auc_control,auc_cov, directionals=1)
 else :
     # Get pvalues from test for DA down or upregulated
     if celllines:
@@ -295,8 +295,8 @@ if test_sep :
         pvalues2_down[i] = pvalues[i][1]
 
 if test_sep :
-    pvalues2_up_adjusted = adj_pvals(pvalues2_up)
-    pvalues2_down_adjusted = adj_pvals(pvalues2_down)
+    pvalues_up_adjusted2 = adj_pvals(pvalues2_up)
+    pvalues_down_adjusted2 = adj_pvals(pvalues2_down)
 else :
     pvalues_adjusted2 = adj_pvals(pvalues2)
 
