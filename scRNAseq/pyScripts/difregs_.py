@@ -1,3 +1,4 @@
+import os
 import re
 import math
 import numpy as np
@@ -12,6 +13,8 @@ from scipy.stats import mannwhitneyu as mwu
 from scipy.stats import ks_2samp
 from statsmodels.stats.multitest import multipletests as multest
 from itertools import compress
+
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
 ## WILCOXON TEST CONTRL VS COVID
 # Performs wilcoxon u test of regulon activity (using auc matrix) between control and covid samples
@@ -46,7 +49,7 @@ def mwuAUC(auc1,auc2, directionals=0):
 
 
 ## KOLMOGOROV TEST CONTROL VS COVID
-def ksAUC(auc1,auc2):
+def ksAUC(auc1,auc2, directionals=0):
     print("Performing Kolmogrov Test on ...")
     celltypes = sorted(list(auc1['source'].unique()))
     pvalues = {}
@@ -175,6 +178,11 @@ meta_group = pd.Series(data=dict(metadf[['ID','groups']].values), index=list(met
 # Retrive regulon activity matrix (auc_mtx) from pyscenic
 lf = lp.connect(path_scenic_loom, mode='r+', validate=False)
 auc_mtx_multi = pd.DataFrame(lf.ca.RegulonsAUC, index=lf.ca.CellID)
+
+# create a dictionary of regulons:
+regulons = {}
+for i,r in pd.DataFrame(lf.ra.Regulons,index=lf.ra.Gene).iteritems():
+    regulons[i] =  list(r[r==1].index.values)
 lf.close()
 
 # in case filtering of auc_mtrx is necessary
