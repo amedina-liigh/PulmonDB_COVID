@@ -157,7 +157,7 @@ def adj_pvals(pvalues) :
 #def main():
 #############################
 ## Read input and clean data
-# input vars: path_meta, path_scenic_loom, filter_auc, celllines
+# input vars: path_meta, path_scenic_loom, filter_auc, filter_auc_regs, path_regulons_counts, min_reg_counts, test_sep, min_gene_occ
 
 # Read metadata or annotations ## first col is samples, second is source (of sample), third is disease flag
 meta = pd.read_csv( path_meta, sep = ",")
@@ -179,11 +179,20 @@ meta_group = pd.Series(data=dict(metadf[['ID','groups']].values), index=list(met
 lf = lp.connect(path_scenic_loom, mode='r+', validate=False)
 auc_mtx_multi = pd.DataFrame(lf.ca.RegulonsAUC, index=lf.ca.CellID)
 
-# create a dictionary of regulons:
+# create a dictionary of regulons (no filter):
 regulons = {}
 for i,r in pd.DataFrame(lf.ra.Regulons,index=lf.ra.Gene).iteritems():
     regulons[i] =  list(r[r==1].index.values)
+
+# regulons gene occurance
+regGeneOcc = pd.DataFrame(lf.ra.RegulonGeneOccurrences, columns = list(auc_mtx_multi.columns), index= list(lf.ra.Gene))
+regulons_fltr = {}
+for tf in regGeneOcc:
+    regulons_fltr[tf] = list(regGeneOcc[tf][regGeneOcc[tf] > min_gene_occ].index)
+
 lf.close()
+
+
 
 # in case filtering of auc_mtrx is necessary
 if filter_auc_samples:
