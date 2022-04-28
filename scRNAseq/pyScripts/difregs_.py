@@ -169,7 +169,7 @@ def l2fc_(auc1,auc2):
   return l2fc
 
 # Build dataframe containing P values, adjusted P values, log2 fold changes, and regulones
-def dfs_(auc1,auc2):
+def dfs_(auc1,auc2,pvalues,pvalues_adjusted,l2fc):
   celltypes = sorted(list(set(auc1['celltype'].unique()).intersection(set(auc2['celltype'].unique()))))
   dfs = {}
   for i in celltypes:
@@ -354,7 +354,7 @@ l2fc = l2fc_(auc_cov,auc_control)
 
 #############################
 ## BUILD DATAFRAME CONTAINING P VALUES, ADJUSTED P VALUES, LOG2 FOLD CHANGES, AND REGULONS
-dfs_balf = dfs_(auc_cov,auc_control)
+dfs_balf = dfs_(auc_cov,auc_control,pvalues,pvalues_adjusted,l2fc)
 
 #if __name__ == '__main__':
 #    main()
