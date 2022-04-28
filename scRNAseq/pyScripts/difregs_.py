@@ -154,6 +154,29 @@ def adj_pvals(pvalues) :
       pvalues_adjusted[i] = multest(pvals = pvalues[i],method = 'fdr_bh')[1]
     return pvalues_adjusted
 
+# Log2 fold change calculation
+def l2fc_(auc1,auc2):
+  celltypes = sorted(list(set(auc1['celltype'].unique()).intersection(set(auc2['celltype'].unique()))))
+  l2fc = {}
+  for i in celltypes:
+    cellTypeL2fcVector = []
+    for j in range((len(auc1.columns)-1)):
+      mean1 = (np.mean(auc1[auc1['celltype'] == i].iloc[:,j])+1)
+      mean2 = (np.mean(auc2[auc2['celltype'] == i].iloc[:,j])+1)
+      res = np.log2(mean1/mean2)
+      cellTypeL2fcVector.append(res)
+    l2fc[i] = cellTypeL2fcVector
+  return l2fc
+
+# Build dataframe containing P values, adjusted P values, log2 fold changes, and regulones
+def dfs_(auc1,auc2):
+  celltypes = sorted(list(set(auc1['celltype'].unique()).intersection(set(auc2['celltype'].unique()))))
+  dfs = {}
+  for i in celltypes:
+    df = pd.DataFrame({"reg":auc1.columns[0:(len(auc1.columns)-1)],"pval":pvalues[i],"adj_pval":pvalues_adjusted[i],"l2fc":l2fc[i]})
+    dfs[i] = df
+  return dfs
+
 #def main():
 #############################
 ## Read input and clean data
@@ -324,6 +347,14 @@ else :
     regsPass_1stQ2 = {}
     for i in pvalues_adjusted2:
       regsPass_1stQ2[i] = list(pvalues_adjusted2[i] <= np.quantile(pvalues_adjusted2[i],.25))
+
+#############################
+## LOG2 FOLD CHANGE TEST CONTROL VS COVID
+l2fc = l2fc_(auc_cov,auc_control)
+
+#############################
+## BUILD DATAFRAME CONTAINING P VALUES, ADJUSTED P VALUES, LOG2 FOLD CHANGES, AND REGULONS
+dfs_balf = dfs_(auc_cov,auc_control)
 
 #if __name__ == '__main__':
 #    main()
