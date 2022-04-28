@@ -186,13 +186,8 @@ for i,r in pd.DataFrame(lf.ra.Regulons,index=lf.ra.Gene).iteritems():
 
 # regulons gene occurance
 regGeneOcc = pd.DataFrame(lf.ra.RegulonGeneOccurrences, columns = list(auc_mtx_multi.columns), index= list(lf.ra.Gene))
-regulons_fltr = {}
-for tf in regGeneOcc:
-    regulons_fltr[tf] = list(regGeneOcc[tf][regGeneOcc[tf] > min_gene_occ].index)
 
 lf.close()
-
-
 
 # in case filtering of auc_mtrx is necessary
 if filter_auc_samples:
@@ -212,6 +207,11 @@ if filter_auc_regs :
     for reg in regs: regs_.append(re.sub("\(\+\)","_(+)",reg))
     # apply regs filter
     auc_mtx_multi = auc_mtx_multi.T[auc_mtx_multi.columns.isin(regs_)].T
+    # apply regs filter in regulons list
+    regGeneOcc = regGeneOcc.T[regGeneOcc.T.index.isin(regs_)].T
+    regulons_fltr = {}
+    for tf in regGeneOcc:
+        regulons_fltr[tf] = list(regGeneOcc[tf][regGeneOcc[tf] > min_gene_occ].index)
 
 #############################
 ## Compute RSS
@@ -254,7 +254,7 @@ if test_sep :
     if celllines:
         pvalues = mwuAUCcelllines(auc_control,auc_cov, directionals=1)
     else :
-        pvalues = mwuAUC(auc_control,auc_cov, directionals=1)
+        pvalues = mwuAUC(auc_cov, auc_control, directionals=1)
 else :
     # Get pvalues from test for DA down or upregulated
     if celllines:
@@ -296,12 +296,12 @@ if test_sep :
     if celllines:
         pvalues2 = ksAUCcelllines(auc_control,auc_cov, directionals=1)
     else :
-        pvalues2 = ksAUC(auc_control,auc_cov, directionals=1)
+        pvalues2 = ksAUC(auc_cov,auc_control, directionals=1)
 else :
     if celllines:
         pvalues2 = ksAUCcelllines(auc_control,auc_cov)
     else :
-        pvalues2 = ksAUC(auc_control,auc_cov)
+        pvalues2 = ksAUC(auc_control, auc_cov)
 
 # split dictionary if directional test were performed to facilitate the downstream pipeline
 if test_sep :
