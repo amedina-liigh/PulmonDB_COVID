@@ -1,0 +1,607 @@
+---
+title: "PulmonDB - COVID19."
+subtitle: "Regulons Selection: tissues"
+date: "`r Sys.Date()`"
+author: "Monica Padilla"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: hide
+    theme: cosmo
+    highlight: textmate
+    df_print: paged # kable, tibble
+params:
+  celllines : 0
+  organs : 1
+  lung : 0
+  inputdir : ../regulons-analysis/out/organs-desgtex2/
+  outdir : ../regulons-analysis/out/organs-desgtex2/plots/
+  TF_Family_DBD_hsapiens_db : ~/Documents/RegGenoLab/dbs/TF_Family_DBD-hsapiens.csv # cisBP tf family info
+  metadata.fn : ~/Documents/RegGenoLab/COVID19/pyscenic/regulons-analysis/out/organs-desgtex/desai2020_gtexv8-subTissues-sample_source_disease.csv # experiment metadata
+  tfs.fn : tfs947-ordered.txt # TF as outputted from scenic loom, only through scenic counts filter
+  auc_mtx.fn : auc_mtx.RData
+  l2fc.fn : log2fc_aucmtx.csv
+  RSS.fn : RSSs.csv # Regulons Specificity Scores
+  ## From reticulateEnrich_.R
+  # pvals from DA tests
+  pval_mwu.fn : pvalues-mwu-2t.csv
+  pval_klm.fn : pvalues-klm-2t.csv
+  # adjusted pvals from DA tests
+  adj_pvals_mwu.fn : pvalues-mwu-2t-adjusted.csv
+  adj_pvals_klm.fn : pvalues-klm-2t-adjusted.csv
+  # regulons/tfs selection from DA and/or enrichment
+  tfs_DA_2t.fn : tfs_mwu_ks_fdr0005-0295-2t.RData
+  tfs_DA_enrichLFC_2t.fn : tfs_DA0005-0295_enrichLFC_2t.RData
+  tfs_targets.fn : tfs_targets_fltr.RData
+---
+
+```{r, eval=FALSE, echo=FALSE}
+# global variables
+# para probar el codigo sin hacer knit
+params <- {}
+# analysis
+params$celllines <- 0
+params$organs <- 1
+params$lung <- 0
+# dirs
+params$inputdir <- "/home/user/Documents/RegGenoLab/COVID19/pyscenic/regulons-analysis/out/organs-desgtex2/"
+params$outdir <- "/home/user/Documents/RegGenoLab/COVID19/pyscenic/regulons-analysis/out/organs-desgtex2/plots/"
+# files
+params$TF_Family_DBD_hsapiens_db <- "~/Documents/RegGenoLab/dbs/TF_Family_DBD-hsapiens.csv"
+params$metadata.fn <- "~/Documents/RegGenoLab/COVID19/pyscenic/regulons-analysis/out/organs-desgtex/desai2020_gtexv8-subTissues-sample_source_disease.csv"
+# direct out
+params$tfs.fn <- "tfs947-ordered.txt" # tfs guiding regs- after filtering
+params$tfs_targets.fn <- "tfs_targets_fltr.RData"
+params$RSS.fn <- "RSSs.csv"
+params$auc_mtx.fn <- "auc_mtx.RData"
+params$l2fc.fn <- "log2fc_aucmtx.csv"
+# selected regs based on tests
+params$tfs_DA_enrichLFC_2t.fn <- "tfs_DA0005-0295_enrichLFC_2t.RData" #tfs_DA24_enrichLFC_2t.RData
+params$tfs_DA_2t.fn <- "tfs_mwu_ks_fdr0005-0295-2t.RData" # tfs_mwu_ks_fdr24-2t.RData
+# tests pvalues
+params$adj_pvals_mwu.fn <- "pvalues-mwu-2t-adjusted.csv"
+params$adj_pvals_klm.fn <- "pvalues-klm-2t-adjusted.csv"
+params$pval_mwu.fn <- "pvalues-mwu-2t.csv"
+params$pval_klm.fn <- "pvalues-klm-2t.csv"
+#
+params$sub_cases_rss_plots <- 1
+# params$up = 1
+```
+
+```{r}
+## Load functions
+source("~/Documents/RegGenoLab/COVID19/pyscenic/regulons-selection-scripts/regs-analysis.R")
+```
+
+
+
+\
+
+## **Selection of Regulons based on Differentially Activation and Specificity **
+
+Use of Regulon Specificity Scores (also referred here as enrichment although it is not exactly) + Differential Activation (DA) of Regulons Analysis. This is an exploratory report on the parameters used to select regulons.
+Main code for Regulons Selection = `reticulateEnrich.R`
+
+```{r, include=FALSE}
+# Dont run code in this document
+knitr::opts_chunk$set(
+  #eval = FALSE
+  rows.print=11,
+  cols.min.print=12
+)
+```
+
+\
+
+### **DA tests pvalues distributions** {.tabset .tabset-pills}
+
+#### **Mann Whitney U Test**
+
+_P-values_ distributions resulting from `Mann Whitney U Test` for Differential Activation of Regulons (measured from AUC scores per regulon, Regulon Activity Matrix). Non-adjusted _p-values_ are displayed.
+
+Run `reticulateEnrich_.R` first.
+
+
+```{r, message=FALSE}
+library(tidyverse) ## gplot, dplyr, stringr
+library(ggpubr) ## ggarange
+
+pvalues <- as.data.frame(read_csv(paste0(params$inputdir, params$pval_mwu.fn), col_names = T))
+plots <- vector('list', length(pvalues)) # list of plots
+# create plots iteratively
+for (i in 1:ncol(pvalues)) {
+  exp <- colnames(pvalues)[i]
+  print(exp)
+
+  plots[[i]] <- ggplot(pvalues,aes(x=.data[[exp]])) + #<<
+    geom_bar(fill="#9966bb") + # geom hist didnt work
+    scale_x_binned() +
+    labs(title = exp, x="pvalue", y="")
+}
+names(plots) <- names(pvalues)
+
+# display plots together
+p <- ggarrange(plots[[1]],plots[[2]],plots[[3]],plots[[4]],plots[[5]],
+          ncol = 2, nrow = 3)
+# add title
+annotate_figure(p,
+                top = text_grob("P-values Mann Whitney U Tests",face = "bold", size = 14))
+
+png(paste0(params$outdir,"hist_pvalues-mwu.png"), width = 600, height = 600)
+# add title
+annotate_figure(p,
+                top = text_grob("P-values Mann Whitney U Tests",face = "bold", size = 14))
+dev.off()
+
+# minimum p values per experiment
+apply(pvalues,2,min)
+```
+
+
+Each pvalue corresponds to a TF/regulon being differentially active in a given experiment vs its control (not shown).
+
+* pvalues from **TRUE** null hypothesis (corresponding to Error Type II) distribution --> **uniform distribution** in range [0,1]
+
+* pvalues from **FALSE** null hypothesis distribution --> asymetric, skewed to zero
+
+
+Most of these distributions show that pvalues are more skewed to zero than what we would expect from a uniform distribution thus indicating that most of them correspond to **FALSE** null hypothesis.
+
+Using a too low significance level would lead to rejecting true positives.[1]
+
+
+#### **Kolmogrov Test**
+
+_P-values_ distributions resulting from `Kolmogrov Test` for Differential Activation of Regulons (measured from AUC scores per regulon, Regulon Activity Matrix). Non-adjusted _p-values_ are displayed.
+
+```{r, message=FALSE}
+library(tidyverse) ## gplot, dplyr, stringr
+library(ggpubr) ## ggarange
+
+
+pvalues2 <- as.data.frame(read_csv(paste0(params$inputdir,params$pval_klm.fn), col_names = T))
+# rename cols for display in graphs
+names(pvalues2) <- names(pvalues)
+
+plots2 <- vector('list', length(pvalues2)) # list of plots
+# create plots iteratively
+for (i in 1:ncol(pvalues2)) {
+  exp <- colnames(pvalues2)[i]
+  print(exp)
+
+  plots2[[i]] <- ggplot(pvalues2,aes(x=.data[[exp]])) + #<<
+    geom_bar(fill="#9966bb") + # geom hist didnt work
+    scale_x_binned() +
+    labs(title = exp, x="pvalue", y="")
+
+}
+names(plots2) <- names(pvalues2)
+
+# display plots together
+p <- ggarrange(plots[[1]],plots[[2]],plots[[3]],plots[[4]],plots[[5]],
+          ncol = 2, nrow = 3)
+# add title
+annotate_figure(p,
+                top = text_grob("P-values Kolmogrov Tests",face = "bold", size = 14))
+
+png(paste0(params$outdir,"hist_pvalues-klm.png"), width = 600, height = 600)
+annotate_figure(p,
+                top = text_grob("P-values Kolmogrov Tests",face = "bold", size = 14))
+dev.off()
+
+apply(pvalues,2,min)
+```
+
+
+### **DA tests adjusted pvalues distributions** {.tabset .tabset-pills}
+
+#### **Mann Whitney U Test**
+
+Get dataframes of adjusted pvalues from both test to work with locally:
+
+```{r, eval=FALSE}
+# on the cluster
+# Run `reticulateEnrich_.R` first
+library(tidyverse)
+
+# retrieve adjusted pvalues from difregs script
+pvalues_adj <- py$pvalues_adjusted
+pvalues_adj2 <- py$pvalues_adjusted2
+
+
+# turn to dataframes
+pv.adj.mwu <- t(data.frame(matrix(unlist(pvalues_adj), nrow=length(pvalues_adj), byrow=TRUE)))
+colnames(pv.adj.mwu) <- keys_ct
+pv.adj.klm <- t(data.frame(matrix(unlist(pvalues_adj2), nrow=length(pvalues_adj2), byrow=TRUE)))
+colnames(pv.adj.klm) <- keys_ct
+write.csv(pv.adj.mwu, file = paste0(outdir,"pvalues-mwu-2t-adjusted.csv"), quote = F, row.names = F)
+write.csv(pv.adj.mwu, file = paste0(outdir,"pvalues-klm-2t-adjusted.csv"), quote = F, row.names = F)
+
+```
+
+Make plots:
+
+```{r}
+library(tidyverse) ## gplot, dplyr, stringr
+library(ggpubr) ## ggarange
+
+pv.adj.mwu <- as.data.frame(
+  read_csv(file = paste0(params$inputdir,params$adj_pvals_mwu.fn),col_names = T))
+pvalues <- pv.adj.mwu # just changed this #<<
+
+plots <- vector('list', length(pvalues)) # list of plots
+# create plots iteratively
+for (i in 1:ncol(pvalues)) {
+  exp <- colnames(pvalues)[i]
+  print(exp)
+
+  plots[[i]] <- ggplot(pvalues,aes(x=.data[[exp]])) + #<<
+    geom_bar(fill="#9966bb") + # geom hist didnt work
+    scale_x_binned() +
+    labs(title = exp, x="pvalue", y="")
+
+}
+names(plots) <- names(pvalues)
+
+
+# display plots together
+p <- ggarrange(plots[[1]],plots[[2]],plots[[3]],plots[[4]],plots[[5]],
+          ncol = 2, nrow = 3)
+annotate_figure(p,top = text_grob("Adjusted P-values Mann Whitney U Tests",face = "bold", size = 14)) # and this
+
+png(paste0(params$outdir,"hist_adj-pvalues-mwu.png"), width = 600, height = 600)
+annotate_figure(p,top = text_grob("Adjusted P-values Mann Whitney U Tests",face = "bold", size = 14)) # and this
+dev.off()
+
+# minimum p values per experiment
+apply(pvalues,2,min)
+```
+
+
+#### **Kolmogrov Test**
+
+```{r, message=FALSE}
+library(tidyverse) ## gplot, dplyr, stringr
+library(ggpubr) ## ggarange
+
+pv.adj.klm <- as.data.frame(read_csv(paste0(params$inputdir,params$adj_pvals_klm.fn), col_names = T))
+pvalues2 <- pv.adj.klm # just changed this #<<
+
+# rename cols for display in graphs
+names(pvalues2) <- names(pvalues)
+
+plots2 <- vector('list', length(pvalues2)) # list of plots
+# create plots iteratively
+for (i in 1:ncol(pvalues2)) {
+  exp <- colnames(pvalues2)[i]
+  print(exp)
+
+  plots2[[i]] <- ggplot(pvalues2,aes(x=.data[[exp]])) + #<<
+    geom_bar(fill="#9966bb") + # geom hist didnt work
+    scale_x_binned() +
+    labs(title = exp, x="pvalue", y="")
+
+}
+names(plots2) <- names(pvalues2)
+
+# display plots together
+p <- ggarrange(plots[[1]],plots[[2]],plots[[3]],plots[[4]],plots[[5]],
+          ncol = 2, nrow = 3)
+# add title
+annotate_figure(p,
+                top = text_grob("Adjusted P-values Kolmogrov Tests",
+                                face = "bold", size = 14)) # and this
+
+png(paste0(params$outdir,"hist_adj-pvalues-klm.png"), width = 600, height = 600)
+annotate_figure(p,
+                top = text_grob("Adjusted P-values Kolmogrov Tests",
+                                face = "bold", size = 14)) # and this
+dev.off()
+
+apply(pvalues,2,min)
+```
+
+
+### **FDR threshold on adjusted p-values** {.tabset .tabset-pills}
+
+#### **Mann Whitney U Test**
+
+Import dataset and call source script with functions:
+
+```{r, message=FALSE}
+library(tidyverse)
+
+## call functios
+source("~/Documents/RegGenoLab/COVID19/PulmonDB_COVID/COVID/bulk/rScripts/FDRthreshold_functions.R")
+
+## dataset
+pv.adj.mwu <- as.data.frame(read_csv(paste0(params$inputdir,params$adj_pvals_mwu.fn), col_names = T))
+pv.adj.mwu <- as.data.frame(pv.adj.mwu)
+# rename cols for display in graph
+#head(pv.adj.mwu)
+```
+
+
+```{r, message=FALSE}
+thrs.mwu <- regsPerFDRthr(pv.adj.mwu, fdr_lowth = 0.0005, step = 0.001, fdr_upthr = 0.03)
+thrs.mwu
+
+# ALSO TRY
+# thrs.mwu <- regsPerFDRthr(pv.adj.mwu, fdr_lowth = 0.05)
+# thrs.mwu
+```
+
+Se buscó que el `FDR threshold` (entre `0.2` y `0.1`) elegido permitiera que nos quedaramos con alrededor de `100 regulones` por experimento. Esto puesto que el set de regulones se someterá a otros filtros:
+- pvalor ajustado en test de Kolmogrov
+- LFC de enriquecimiento de regulon en el experimento dado
+En conjunto, estos filtros darán lugar a un set de regulones cuya especificidad y relevancia en el experimento dado sean relativamente confiables.
+
+El `FDR threshold` elegido por experimento se especifica aquí:
+
+```{r, message=FALSE}
+fdrs.mwu <- getChosenFDRth(thrs.mwu, min.regs = c(100,93))
+fdrs.mwu
+
+# ALSO TRY 
+```
+
+#### **Kolmogrov Test**
+
+
+```{r, message=FALSE}
+thrs.klm <- regsPerFDRthr(pv.adj.klm, fdr_lowth = 0.0005, step = 0.001, fdr_upthr = 0.03)
+thrs.klm
+```
+
+
+El `FDR threshold` elegido por experimento se especifica aquí:
+
+```{r, message=FALSE}
+fdrs.klm <- getChosenFDRth(thrs.klm, min.regs = c(100,30))
+fdrs.klm
+
+fdrs.mwu <- fdrs.mwu[match(colnames(pv.adj.mwu),rownames(fdrs.mwu)),] # arrange rows as pvalues df
+fdrs.klm <- fdrs.klm[match(colnames(pv.adj.klm),rownames(fdrs.klm)),] # arrange rows as pvalues df
+regsPassFDR.mwu <- data.frame()
+regsPassFDR.klm <- data.frame()
+i = 1
+for (exp in colnames(pv.adj.mwu)){
+  if(i ==1){
+    regsPassFDR.mwu <- cbind(pv.adj.mwu[,exp] <= fdrs.mwu[exp,"FDR_thr"])
+    regsPassFDR.klm <- cbind(pv.adj.klm[,exp] <= fdrs.klm[exp,"FDR_thr"])
+    i=2
+  } else {
+    regsPassFDR.mwu <- cbind(regsPassFDR.mwu, pv.adj.mwu[,exp] <= fdrs.mwu[exp,"FDR_thr"])
+    regsPassFDR.klm <- cbind(regsPassFDR.klm, pv.adj.klm[,exp] <= fdrs.klm[exp,"FDR_thr"])
+  }
+}
+colnames(regsPassFDR.mwu) <- colnames(pv.adj.mwu)
+colnames(regsPassFDR.klm) <- colnames(pv.adj.klm)
+
+tfs_mwu_fdr = list()
+tfs_ks_fdr = list()
+for (i in 1:length(colnames(pv.adj.klm))) {
+  # assess which passed the mwu or ks tests
+  seto1 = tfs[regsPassFDR.mwu[,i]]
+  seto2 = tfs[regsPassFDR.klm[,i]]
+  # get tfs that passed both tests
+  tfs_mwu_fdr[[i]] = seto1
+  tfs_ks_fdr[[i]] = seto2
+}
+names(tfs_mwu_fdr) <- colnames(regsPassFDR.mwu)
+names(tfs_ks_fdr) <- colnames(regsPassFDR.mwu)
+# tfs_mwu_fdr
+# tfs_ks_fdr
+length(unique(c(
+  tfs_mwu_fdr$Bowel, tfs_mwu_fdr$Heart, tfs_mwu_fdr$Kidney, 
+  tfs_mwu_fdr$Liver, tfs_mwu_fdr$Lung
+)))
+
+length(unique(c(
+  tfs_ks_fdr$Bowel, tfs_ks_fdr$Heart, tfs_ks_fdr$Kidney, 
+  tfs_ks_fdr$Liver, tfs_ks_fdr$Lung
+)))
+
+```
+
+
+### **Regulons Counts After Filtering**
+
+\
+
+#### **DA:**
+
+After taking common Differentialy Activated Regulons from both tests:
+
+```{r}
+tfs_da.fn <- paste0(params$inputdir, params$tfs_DA_2t.fn)
+tfs_da <- readRDS(tfs_da.fn)
+# at reticulateEnrich line 117
+## check how many regulons were kept
+t(as.data.frame(lapply(tfs_da,length)))
+
+## number of regulons in DA
+length(unique(c(
+  tfs_da$Bowel, tfs_da$Heart, tfs_da$Kidney, 
+  tfs_da$Liver, tfs_da$Lung
+)))
+```
+
+✅ Filter Applied
+
+\
+
+Differentiate between **Up** and **Down Regulated** regulons based on logFC (infection/mock):
+
+```{r}
+library(tidyverse)
+
+## Load Data
+# auc_mtx
+auc_mtx <- readRDS(paste0(params$inputdir,params$auc_mtx))
+
+# Load data: TFs names (in order after just scenic counts cutoff)
+tfs <- as.data.frame(read_csv(paste0(params$inputdir,params$tfs.fn), col_names = F))[,1]
+tfs <- stringr::str_remove(tfs, "_\\(\\+\\)")
+tfs <- tfs[match(str_remove(colnames(auc_mtx),"_\\(\\+\\)"), tfs)]
+
+# Load and tidy data: log 2 FC (auc_mtx)
+l2fc <- as.data.frame(read_csv(paste0(params$inputdir,params$l2fc.fn), col_names = T))
+rownames(l2fc) <- colnames(auc_mtx)
+head(l2fc)
+
+## match dfs rows (tfs)
+l2fc <- l2fc[match(str_replace(tfs,"$","_\\(\\+\\)"),rownames(l2fc)),]
+
+## Make lists of up/down regulons
+tfs_da_up = list()
+tfs_da_down = list()
+for (exp in names(tfs_da)) {
+  tfs_da_up[[exp]] <- tfs_da[[exp]][tfs_da[[exp]] %in%  rownames(l2fc)[which(l2fc[exp] > 0)]]
+  tfs_da_down[[exp]] <- tfs_da[[exp]][tfs_da[[exp]] %in% rownames(l2fc)[which(l2fc[exp] < 0)]]
+}
+
+# make df of counts of regulons
+n_up <- t(as.data.frame(lapply(tfs_da_up,length)))[,1]
+n_down <- t(as.data.frame(lapply(tfs_da_down,length)))[,1]
+data.frame(up = n_up, down = n_down)
+```
+
+✅ Filter Applied  for  **Upregulated** Regulons
+
+***
+
+#### **DA + specificity:**
+
+After filtering regulons for those that had an optimal `LFC enrichment` :
+
+```{r}
+tfs_da_enrich.fn <- paste0(params$inputdir, params$tfs_DA_enrichLFC_2t.fn)
+tfs_da_enrich <- readRDS(tfs_da_enrich.fn)
+names(tfs_da_enrich) <- names(tfs_da)
+# at reticulateEnrich line 117
+## check how many regulons were kept
+t(as.data.frame(lapply(tfs_da_enrich,length)))
+
+## number of regulons in DA
+length(unique(c(
+  tfs_da_enrich$Bowel, tfs_da_enrich$Heart, tfs_da_enrich$Kidney, 
+  tfs_da_enrich$Liver, tfs_da_enrich$Lung
+)))
+```
+
+\
+
+Differentiate between **Up** and **Down Regulated** regulons again:
+
+```{r}
+## Make lists of up/down regulons
+tfs_da_enrich_up = list()
+tfs_da_enrich_down = list()
+for (exp in names(tfs_da_enrich)) {
+  tfs_da_enrich_up[[exp]] <-
+    tfs_da_enrich[[exp]][tfs_da_enrich[[exp]] %in% rownames(l2fc)[which(l2fc[exp] > 0)]]
+  tfs_da_enrich_down[[exp]] <-
+    tfs_da_enrich[[exp]][tfs_da_enrich[[exp]] %in% rownames(l2fc)[which(l2fc[exp] < 0)]]
+}
+
+## number of regulons in DA
+length(unique(c(
+  tfs_da_enrich_up$Bowel, tfs_da_enrich_up$Heart, tfs_da_enrich_up$Kidney, 
+  tfs_da_enrich_up$Liver, tfs_da_enrich_up$Lung
+)))
+
+# make df of counts of regulons
+n_up <- t(as.data.frame(lapply(tfs_da_enrich_up,length)))[,1]
+n_down <- t(as.data.frame(lapply(tfs_da_enrich_down,length)))[,1]
+data.frame(up = n_up, down = n_down)
+```
+
+For regulons that were `Upregulated` and enriched, this filter keeps a decent number of regulons, but that's not the case for `Downregulated` regulons.
+
+✅ Filter Applied  for  **Upregulated** Regulons
+
+
+<!-- ### **FDR threshold less strict**  -->
+<!-- ### **Regulons Counts After Filtering 2** -->
+
+
+### **Volcano Plots**
+
+```{r, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(ggrepel)
+
+############################################
+## Plots 2t - 2 tails test
+
+# Load and tidy data: regulons/tfs that were in DA + enriched
+paste0("using set of DA regulons (tfs): ",tfs_da.fn)
+tfs_da.fn <- paste0(params$inputdir, params$tfs_DA_2t.fn)
+tfs_da <- readRDS(tfs_da.fn)
+dfs <- list2Dfs(tfs_da)
+dfs$Bowel
+dfs$Heart
+dfs$Kidney
+dfs$Liver
+dfs$Lung
+
+# Load and tidy data: adjusted pvalues, format
+paste0("using pvalues from test : ", params$adj_pvals_mwu.fn)
+pvalues <- as.data.frame(read_csv(paste0(params$inputdir,params$adj_pvals_mwu.fn), col_names = T))
+rownames(pvalues) <- tfs
+
+## Graph a Volcano Plot per condition
+plots <- volcanos_per_exp(pvalues = pvalues, tfs_da = tfs_da,
+                          test = "2t", save_png=T, outdir = params$outdir)
+
+plots
+
+############################################
+## Make lists of up/down regulons
+tfs_da_up = list()
+tfs_da_down = list()
+for (exp in names(tfs_da)) {
+  tfs_da_up[[exp]] <- tfs_da[[exp]][tfs_da[[exp]] %in%  rownames(l2fc[exp] > 0)]
+  tfs_da_down[[exp]] <- tfs_da[[exp]][tfs_da[[exp]] %in% rownames(l2fc[exp] > 0)]
+}
+```
+
+List of all Differentially Activated **Upregulated** Regulons:
+
+```{r, message=FALSE, warning=FALSE}
+#tfs_da_up
+dfs <- list2Dfs(tfs_da_up)
+dfs$Bowel
+dfs$Heart
+dfs$Kidney
+dfs$Liver
+dfs$Lung
+```
+
+List of all Differentially Activated **Dowregulated** Regulons:
+
+```{r, message=FALSE, warning=FALSE}
+#tfs_da_down
+dfs <- list2Dfs(tfs_da_down)
+dfs$Bowel
+dfs$Heart
+dfs$Kidney
+dfs$Liver
+dfs$Lung
+```
+
+
+
+### **References**
+
+
+[1] https://www.cienciadedatos.net/documentos/19b_comparaciones_multiples_correccion_p-value_fdr
+
+[2] https://yulab-smu.top/biomedical-knowledge-mining-book/clusterprofiler-go.html
+
+```{r}
+sessionInfo()
+```
