@@ -1,0 +1,1520 @@
+---
+title: "PulmonDB - COVID19."
+subtitle: "Regulons Exploration: cell lines"
+date: "`r Sys.Date()`"
+author: "Monica Padilla"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: hide
+    theme: cosmo
+    highlight: textmate
+    df_print: paged # kable, tibble
+params:
+  celllines : 1
+  organs : 0
+  lung : 0
+  ## dirs
+  inputdir : ../regulons-analysis/out/celllines/
+  outdir : ../regulons-analysis/out/celllines/plots/
+  ## files
+  TF_Family_DBD_hsapiens_db : /home/user/Documents/mpadilla/dbs/TF_Family_DBD-hsapiens.csv # cisBP tf family info
+  metadata.fn : /home/user/Documents/mpadilla/COVID19/pyscenic/regulons-analysis/out/celllines/meta_sample-source-disease-cellline_subCelllines.csv # experiment metadata
+  ## From pyscenic
+  auc_mtx.fn : auc_mtx.RData
+  RSS.fn : RSSs.csv # Regulons Specificity Scores
+  tfs.fn : tfs898-ordered.csv # TF as outputted from scenic loom, only through scenic counts filter
+  tfs_targets.fn : tfs_targets.RData
+  ## From reticulateEnrich_.R
+  l2fc.fn : log2fc_aucmtx.csv
+  # DA tests pvalues
+  adj_pvals_mwu.fn : pvalues-mwu-2t-adjusted.csv
+  adj_pvals_klm.fn : pvalues-klm-2t-adjusted.csv
+  pval_mwu.fn : pvalues-mwu-2t.csv
+  pval_klm.fn : pvalues-klm-2t.csv
+  # selected regulons
+  tfs_DA_enrichLFC_2t.fn : tfs_DA1-24_enrichLFC_2t.RData
+  tfs_DA_2t.fn : tfs_mwu_ks_fdr1-24-2t.RData # tfs_mwu_ks_fdr24-2t.RData
+  
+---
+  
+```{r, eval=FALSE, echo=FALSE}
+# global variables
+# para probar el codigo sin hacer knit
+params <- {}
+params$celllines <- 1
+# dirs
+params$inputdir <- "/home/user/Documents/mpadilla/COVID19/pyscenic/regulons-analysis/out/celllines/"
+params$outdir <- "/home/user/Documents/mpadilla/COVID19/pyscenic/regulons-analysis/out/celllines/plots/"
+# files
+params$TF_Family_DBD_hsapiens_db <- "/home/user/Documents/mpadilla/dbs/TF_Family_DBD-hsapiens.csv"
+params$metadata.fn <- "/home/user/Documents/mpadilla/COVID19/pyscenic/regulons-analysis/out/celllines/meta_sample-source-disease-cellline_subCelllines.csv"
+## From pyscenic
+params$auc_mtx.fn <- "auc_mtx.RData"
+params$RSS.fn <- "RSSs.csv"
+params$tfs.fn <- "tfs898-ordered.csv"
+params$tfs_targets.fn <- "tfs_targets_fltr.RData"
+## From reticulateEnrich.R
+params$l2fc.fn <- "log2fc_aucmtx.csv"
+# DA tests pvalues
+params$adj_pvals_mwu.fn <- "pvalues-mwu-2t-adjusted.csv"
+params$adj_pvals_klm.fn <- "pvalues-klm-2t-adjusted.csv"
+params$pval_mwu.fn <- "pvalues-mwu-2t.csv"
+params$pval_klm.fn <- "pvalues-klm-2t.csv"
+# selected regulons
+params$tfs_DA_enrichLFC_2t.fn <- "tfs_DA1-24_enrichLFC_2t.RData"
+params$tfs_DA_2t.fn <- "tfs_mwu_ks_fdr1-24-2t.RData" # tfs_mwu_ks_fdr24-2t.RData
+```
+
+
+\
+
+## **Exploration of Regulons based on DA and RSS specificity**
+
+### **Preparation**
+
+Load libraries and `regs-analysis.R` script.
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse) # data handling: dplyr, stringr
+library(ComplexHeatmap) # graphics
+library(circlize) # colors for complexheatmap
+# library(RColorBrewer) # colors
+library(org.Hs.eg.db) # orgDB hsapiens annotations
+library(ggpubr) ## ggarrange
+library(enrichplot) # graphics
+library(clusterProfiler) # Biological Terms enrichment analysis + dot plots
+library(pathview)
+library(DOSE)
+library(wordcloud)
+library(RColorBrewer)
+
+## Load functions
+source("/home/user/Documents/mpadilla/COVID19/pyscenic/regulons-analysis/scripts/regs-analysis.R")
+```
+
+Load general data and tidy:
+
+```{r, message=FALSE, warning=FALSE}
+## Load Data
+# Load data: Experiment Metadata
+meta <- as.data.frame(read_csv(params$metadata.fn, col_names = T))
+if(params$celllines == 1){
+  meta <- meta %>% filter(disease == "Y") %>% dplyr::select(source, cellline) %>% distinct()
+  # format as in matrix for display
+  meta$cellline <- str_replace_all(meta$cellline, "-", "")
+  meta$cellline <- str_replace(meta$cellline, "A549_.+", "A549")
+  meta$source <- str_replace_all(meta$source, "-", "")
+  meta$source <- str_replace(meta$source, "w_vector_expressing_", "")
+  meta$source <- str_replace(meta$source, "1hr_Ruxolitinib_pretreatment", "pt")
+} else {
+  meta <- meta %>% filter(disease == "Y") %>% select(source) %>% distinct()
+}
+
+# Load data: auc_mtx 
+auc_mtx <- as.data.frame(readRDS(paste0(params$inputdir,params$auc_mtx.fn)))
+
+# Load data: TFs names (in order after just scenic counts cutoff)
+tfs <- as.data.frame(read_csv(paste0(params$inputdir,params$tfs.fn), col_names = F))[,1]
+tfs <- stringr::str_remove(tfs, "_\\(\\+\\)")
+tfs <- tfs[match(str_remove(colnames(auc_mtx),"_\\(\\+\\)"),tfs)]
+
+# Load data: tf targets (regulons)
+tfs_targets <- readRDS(paste0(params$inputdir,params$tfs_targets.fn))
+
+# Load data: RSS matrix
+rss <- as.data.frame(read_csv(paste0(params$inputdir,params$RSS.fn), col_names = T))
+rss <- column_to_rownames(rss, var="...1")
+# rownames(rss) <- rownames(rss)[match(colnames(auc_mtx),rownames(rss))]
+rownames(rss) <- rownames(rss)[match(str_replace(tfs,"$","_\\(\\+\\)"),rownames(rss))]
+
+# Load and tidy data: log 2 FC (auc_mtx)
+l2fc <- as.data.frame(read_csv(paste0(params$inputdir,params$l2fc.fn), col_names = T))
+if(params$celllines==1){
+  names(l2fc) <- str_replace_all(names(l2fc), "-", "")
+  names(l2fc) <- str_replace(names(l2fc), "w_vector_expressing_", "")
+  names(l2fc) <- str_replace(names(l2fc), "1hr_Ruxolitinib_pretreatment", "pt")
+}
+# rownames(l2fc) <- colnames(auc_mtx)
+rownames(l2fc) <- str_replace(tfs,"$","_\\(\\+\\)")
+head(l2fc)
+
+# Load data: mwu adj pvalues
+adj_pvals_mwu.fn <- paste0(params$inputdir,params$adj_pvals_klm.fn)
+pvalues <- as.data.frame(read_csv(adj_pvals_mwu.fn, col_names = T))
+rownames(pvalues) <- tfs
+# selected regs - 2tailed tests + rss
+tfs_da.fn <- paste0(params$inputdir,params$tfs_DA_2t.fn)
+tfs_da <- readRDS(tfs_da.fn)
+tfs_da_enrich.fn <- paste0(params$inputdir, params$tfs_DA_enrichLFC_2t.fn)
+tfs_da_enrich <- readRDS(tfs_da_enrich.fn)
+names(tfs_da_enrich) <- names(tfs_da)
+```
+
+Define genes universe and graph number of genes per regulon:
+
+```{r, message=FALSE, warning=FALSE}
+# universe of genes = all genes from all tested regulons (after scenic iterations cutoff)
+genes_universe <- c()
+n.genes.per.reg <- c()
+tested.regs <- names(tfs_targets) %in% str_replace(tfs, "$", "_\\(\\+\\)")
+for (i in 1:length(names(tfs_targets))) {
+  if(tested.regs[i]){
+    genes_universe <- c(genes_universe, 
+                        str_remove(names(tfs_targets[i]), "_\\(\\+\\)"), # tf
+                        unname(unlist(tfs_targets[i]))) # gene targets
+    n.genes.per.reg <- c(n.genes.per.reg, length(unname(unlist(tfs_targets[i]))))
+  }
+}
+genes_universe.df <- bitr(unique(genes_universe), fromType = "SYMBOL",
+        toType = c("ENSEMBL", "ENTREZID"),
+        OrgDb = org.Hs.eg.db)
+genes_universe <- genes_universe.df$ENTREZID # subset to genes found in OrgDb
+#genes_universe <- symbol2EntrezID(genenames = unique(genes_universe))
+names(n.genes.per.reg) <- tfs
+summary(n.genes.per.reg)
+
+# graph # target genes per regulon histogram
+n.genes.per.reg <- as.data.frame(n.genes.per.reg)
+p <- ggplot(n.genes.per.reg,aes(n.genes.per.reg)) + #<<
+    geom_bar(fill="#8274c9") + # geom hist didnt work
+    scale_x_binned() +
+    labs(x="# target genes per regulon", y="") +
+    geom_vline(xintercept = mean(n.genes.per.reg$n.genes.per.reg), color = "red") +
+    geom_vline(xintercept = median(n.genes.per.reg$n.genes.per.reg), color = "blue")
+p + annotate("text", x = 3500, y = 450, 
+             label = c(summary(n.genes.per.reg)[3,])) + 
+  annotate("text", x = 3500, y = 550, 
+             label = c(summary(n.genes.per.reg)[4,]))
+## save to png
+# png(paste0(params$outdir,"hist_genesxregulon.png"), width = 600, height = 200)
+# p + annotate("text", x = 3500, y = 450,
+#              label = c(summary(n.genes.per.reg)[3,])) +
+#   annotate("text", x = 3500, y = 550,
+#              label = c(summary(n.genes.per.reg)[4,]))
+# dev.off()
+```
+
+Make lists of regulons defined as upregulated or downregulated:
+
+```{r, message=FALSE, warning=FALSE}
+## Make lists of up/down regulons
+tfs_da_up = list()
+tfs_da_down = list()
+tfs_da_enrich_up = list()
+tfs_da_enrich_down = list()
+for (exp in names(tfs_da)) {
+  tfs_da_up[[exp]] <- tfs_da[[exp]][tfs_da[[exp]] %in%  rownames(l2fc)[which(l2fc[exp] > 0)]]
+  tfs_da_down[[exp]] <- tfs_da[[exp]][tfs_da[[exp]] %in% rownames(l2fc)[which(l2fc[exp] < 0)]]
+  tfs_da_enrich_up[[exp]] <- intersect(tfs_da_enrich[[exp]], tfs_da_up[[exp]])
+  tfs_da_enrich_down[[exp]] <- intersect(tfs_da_enrich[[exp]], tfs_da_down[[exp]])
+}
+```
+
+
+### **Plots: DA**
+
+#### **Upset Plot**
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ComplexHeatmap)
+library(RColorBrewer)
+
+# tfs_da
+## Check intersections in pairs of experiments
+#has.intersections <- checkCommonRegs(tfs_per_exp_list = tfs_da_up)
+#common.regs.up <- checkCommonRegsTable(tfs_per_exp_list = tfs_da_up)
+
+## Upset Plot
+# subset for experiments that had intersections with other experiments, also plot only intersections >=2
+# m <- make_comb_mat(tfs_da_up[names(tfs_da_up) %in% has.intersections], 
+#                    mode = "distinct")
+# m <- m[comb_degree(m) >= 2]
+#
+```
+
+\
+
+##### **Upregulated Regulons**
+
+Upset Plot of distinctly shared upregulated regulons between experiments:
+
+```{r, message=FALSE, warning=FALSE}
+m <- make_comb_mat(tfs_da_up, mode = "distinct")
+# m <- m[6:10,]
+ss = set_size(m)
+cs = comb_size(m)
+ht = UpSet(m, 
+    set_order = order(ss),
+    comb_order = order(comb_degree(m), -cs),
+    top_annotation = HeatmapAnnotation(
+        "Regulons Intersection" = anno_barplot(cs, 
+            ylim = c(0, max(cs)*1.1),
+            border = FALSE, 
+            gp = gpar(fill = "black"), 
+            height = unit(4, "cm")
+        ), 
+        annotation_name_side = "left", 
+        annotation_name_rot = 90),
+    left_annotation = rowAnnotation(
+        "Regulons Per Experiment" = anno_barplot(-ss, 
+            baseline = 0,
+            axis_param = list(
+                at = c(0, -500, -1000, -1500),
+                labels = c(0, 500, 1000, 1500),
+                labels_rot = 0),
+            border = FALSE, 
+            gp = gpar(fill = "black"), 
+            width = unit(4, "cm")
+        ),
+        set_name = anno_text(set_name(m),
+            location = 0.5,
+            just = "center",
+            width = max_text_width(set_name(m)) + unit(1, "mm"))
+    ), 
+    right_annotation = NULL,
+    show_row_names = FALSE,
+    pt_size = unit(3, "mm"), 
+    lwd = 2,
+    comb_col = RColorBrewer::brewer.pal(n = max(comb_degree(m)), name = "Set1")[comb_degree(m)]
+    )
+ht = draw(ht)
+od = column_order(ht)
+decorate_annotation("Regulons Intersection", {
+    grid.text(cs[od], x = seq_along(cs), y = unit(cs[od], "native") + unit(2, "pt"), 
+        default.units = "native", just = c("left", "bottom"), 
+        gp = gpar(fontsize = 9, col = "#404040"), rot = 45)
+})
+
+# ## save to png
+# png(paste0(params$outdir,"upset_upregulated.png"), width = 1700, height = 600)
+# ht = draw(ht)
+# od = column_order(ht)
+# decorate_annotation("Regulons Intersection", {
+#     grid.text(cs[od], x = seq_along(cs), y = unit(cs[od], "native") + unit(2, "pt"), 
+#         default.units = "native", just = c("left", "bottom"), 
+#         gp = gpar(fontsize = 9, col = "#404040"), rot = 45)
+# })
+# dev.off()
+```
+
+Pairwise comparison of shared regulons, distinctly shared regulons are shown in the next table:
+
+Sets were compared twice, once showing which are unique to each experiment, and the second time excluding comparison of a experiment to itself so sharing of regulons between regulons could be found. 
+
+```{r, message=FALSE, warning=FALSE}
+tableCommonDistinct <- distinctlySharedRegs(tfs_per_exp_list = tfs_da_up)
+tableCommonDistinct
+# save table
+# write_csv(tableCommonDistinct,
+#           file = paste0(params$outdir,"tableDistinctlySharedRegulons_up.csv"), col_names = T)
+
+## subset for SARS-CoV-2 infected experiments
+tableup.sc2 <- tableCommonDistinct %>% dplyr::select(6:10) %>% dplyr::slice(6:10)
+View(tableup.sc2)
+# save table
+# write_csv(tableup.sc2,
+#           file = paste0(params$outdir,"tableDistinctlySharedRegulons_up_subSC2.csv"), col_names = T)
+```
+
+Regulons that are only present in SARS-CoV-2 infection samples:
+
+```{r, message=FALSE, warning=FALSE}
+getDistinct(tfs_per_exp_list = tfs_da_up, indexInterestGroup = 6:10)
+```
+
+***
+
+\
+
+##### **Downregulated Regulons**
+
+Upset Plot of distinctly shared downregulated regulons between experiments:
+
+```{r, message=FALSE, warning=FALSE}
+m <- make_comb_mat(tfs_da_down, mode = "distinct")
+# m <- m[6:10,]
+ss = set_size(m)
+cs = comb_size(m)
+ht = UpSet(m, 
+    set_order = order(ss),
+    comb_order = order(comb_degree(m), -cs),
+    top_annotation = HeatmapAnnotation(
+        "Regulons Intersection" = anno_barplot(cs, 
+            ylim = c(0, max(cs)*1.1),
+            border = FALSE, 
+            gp = gpar(fill = "black"), 
+            height = unit(4, "cm")
+        ), 
+        annotation_name_side = "left", 
+        annotation_name_rot = 90),
+    left_annotation = rowAnnotation(
+        "Regulons Per Experiment" = anno_barplot(-ss, 
+            baseline = 0,
+            axis_param = list(
+                at = c(0, -500, -1000, -1500),
+                labels = c(0, 500, 1000, 1500),
+                labels_rot = 0),
+            border = FALSE, 
+            gp = gpar(fill = "black"), 
+            width = unit(4, "cm")
+        ),
+        set_name = anno_text(set_name(m),
+            location = 0.5,
+            just = "center",
+            width = max_text_width(set_name(m)) + unit(1, "mm"))
+    ), 
+    right_annotation = NULL,
+    show_row_names = FALSE,
+    pt_size = unit(3, "mm"), 
+    lwd = 2,
+    comb_col = RColorBrewer::brewer.pal(n = max(comb_degree(m)), name = "Set1")[comb_degree(m)]
+    )
+ht = draw(ht)
+od = column_order(ht)
+decorate_annotation("Regulons Intersection", {
+    grid.text(cs[od], x = seq_along(cs), y = unit(cs[od], "native") + unit(2, "pt"), 
+        default.units = "native", just = c("left", "bottom"), 
+        gp = gpar(fontsize = 9, col = "#404040"), rot = 45)
+})
+# ## save to png
+# png(paste0(params$outdir,"upset_downregulated.png"), width = 1200, height = 600)
+# ht = draw(ht)
+# od = column_order(ht)
+# decorate_annotation("Regulons Intersection", {
+#     grid.text(cs[od], x = seq_along(cs), y = unit(cs[od], "native") + unit(2, "pt"),
+#         default.units = "native", just = c("left", "bottom"),
+#         gp = gpar(fontsize = 9, col = "#404040"), rot = 45)
+# })
+# dev.off()
+```
+
+Pairwise comparison of shared regulons, distinctly shared downregulated regulons are shown in the next table:
+
+```{r, message=FALSE, warning=FALSE}
+tabledown <- distinctlySharedRegs(tfs_per_exp_list = tfs_da_down)
+tabledown
+# save table
+# write_csv(tabledown,
+#           file = paste0(params$outdir,"tableDistinctlySharedRegulons_down.csv"), col_names = T)
+
+## subset for SARS-CoV-2 infected experiments
+tabledown.sc2 <- tabledown %>% 
+                dplyr::select(6:10) %>% 
+                dplyr::slice(6:10)
+View(tabledown.sc2)
+# save table
+# write_csv(tabledown.sc2,
+#           file = paste0(params$outdir,
+#                         "tableDistinctlySharedRegulons_down_subSC2.csv"),
+#           col_names = T)
+```
+
+Regulons that were only turned off in SARS-CoV-2 infection samples:
+
+```{r, message=FALSE, warning=FALSE}
+getDistinct(tfs_per_exp_list = tfs_da_down, indexInterestGroup = 6:10)
+```
+
+#### **Heatmap**
+
+```{r, message=FALSE, warning=FALSE}
+## Load and tidy data to plot: pvalues adjusted of regulons in DA [UP|DOWN]
+
+# Load and tidy data: regulons/tfs that were in DA + enriched 
+paste0("using set of DA regulons (tfs): ",tfs_da.fn)
+tfs_da <- readRDS(tfs_da.fn)
+if(params$celllines==1){
+  names(tfs_da) <- str_replace_all(names(tfs_da), "-", "")
+  names(tfs_da) <- str_replace(names(tfs_da), "_w_vector_expressing", "")
+  names(tfs_da) <- str_replace(names(tfs_da), "1hr_Ruxolitinib_pretreatment", "pt")
+}
+tfs_da
+# Load and tidy data: adjusted pvalues, format
+paste0("using pvalues from test : ", adj_pvals_mwu.fn)
+pvalues <- as.data.frame(read_csv(adj_pvals_mwu.fn, col_names = T))
+if(params$celllines==1){
+  names(pvalues) <- str_replace_all(names(pvalues), "-", "")
+  names(pvalues) <- str_replace(names(pvalues), "w_vector_expressing_", "")
+  names(pvalues) <- str_replace(names(pvalues), "1hr_Ruxolitinib_pretreatment", "pt")
+}
+rownames(pvalues) <- tfs
+# retrieve regs/tfs in DA
+selectedTFsUp <- selectTFs(tfs_per_exp_list = tfs_da_up)
+# selectedTFsDown <- selectTFs(tfs_per_exp_list = tfs_da_up, test = "downregulated")
+
+selectedTFs <- selectedTFsUp
+
+# subset pvalues for selectedTFs
+pvalues <- pvalues[rownames(pvalues) %in% selectedTFs,]
+pvalues <- t(as.matrix(pvalues))
+```
+
+**Basic heatmap**
+
+Regulons that passed `Mann Whitney` and `Kolmogrov` Tests for Differential Activation with and `FDR Adjusted Pval of <= 0.2`. Only Mann Whitney Adjusted pvalue is shown.
+
+```{r, message=FALSE, warning=FALSE}
+# heatmap colors
+col_fun = colorRamp2(c(0, 0.2, 1), c("red", "white", "steelblue1")) # red is cool, blue is bad pval
+
+Heatmap(pvalues, name = "Adj pvalue", col = col_fun,
+        column_title = "Per Experiment Downregulated Regulons",
+        column_title_gp = gpar(fontsize = 15, fontface = "bold"), column_names_gp = gpar(fontsize = 2))
+```
+
+**TF family info**
+
+```{r, message=FALSE, warning=FALSE}
+# heatmap colors
+col_fun = colorRamp2(c(0, 0.2, 1), c("red", "white", "steelblue1"))
+
+## Tf families annotation
+tf_fam_dbd <- family_annot(tfs_interest = colnames(pvalues))
+cols.tfs <- rainbow(n = length(unique(tf_fam_dbd$Family_Name))) # colors vector
+names(cols.tfs) <- unique(tf_fam_dbd$Family_Name)
+
+# rearrange matrix in TF family order
+pvalues <- pvalues[,match(tf_fam_dbd$TF_Name,colnames(pvalues))]
+
+## Celllines and infection annotation
+if(params$celllines==1){
+  # reorder experiments according to clustering
+  order <- c(11,4,6,7,8,9,1,3,5,10,2)
+  pvalues <- pvalues[order,]
+  meta <- meta[match(rownames(pvalues),meta$source),] # order as in matrix
+  ## cell lines
+  cell.lines <- meta$cellline
+  cols.cells <- RColorBrewer::brewer.pal(n=3, name = "Set1")
+  names(cols.cells) <- unique(cell.lines)
+  ## treatment
+  treatment <- str_replace(
+    str_remove(str_remove(str_extract(meta$source, "^.+ed_"), "_infected_"), "_treated_"), "human_","h")
+  cols.trtm <- RColorBrewer::brewer.pal(n=length(unique(treatment)), name = "Set3")
+  names(cols.trtm) <- unique(treatment)
+}
+
+## Plots
+
+# TF family annotation
+h1 <- HeatmapAnnotation(TF_family = tf_fam_dbd$Family_Name, col = list(TF_family = cols.tfs),
+                        annotation_name_side = "left", annotation_name_gp = gpar(fontsize = 9),
+                        annotation_legend_param = list(TF_family = list(direction = "horizontal", nrow = 3)))
+# experiment cell lines and treatment annotation
+h2 <- rowAnnotation(Cell_line = cell.lines, Treatment = treatment, annotation_name_gp = gpar(fontsize = 9),
+                        col = list(Cell_line = cols.cells, Treatment = cols.trtm),
+                        annotation_legend_param = list(Cell_line = list(direction = "horizontal", nrow = 1),
+                                                       Treatment = list(direction = "horizontal", nrow = 1)))
+## regs_heatmap_DA_[UP|DOWN]_tffam.png
+htmp <- Heatmap(pvalues, name = "Adj pvalue", cluster_columns = FALSE, col = col_fun,
+        column_title = "Per Experiment Downregulated Regulons",
+        column_title_gp = gpar(fontsize = 15, fontface = "bold"), 
+        column_names_rot = 45, column_names_gp = gpar(fontsize = 2), 
+        row_names_gp = gpar(fontsize = 10),
+        bottom_annotation = h1, right_annotation = h2, 
+        heatmap_legend_param = list(direction = "horizontal"))
+
+draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom")
+
+## regs_heatmap_DA_[UP|DOWN]_tffam_tfclust.png
+htmp <- Heatmap(pvalues, name = "Adj pvalue", cluster_columns = TRUE, col = col_fun,
+        column_title = "Per Experiment Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 15, fontface = "bold"), 
+        column_names_rot = 45, column_names_gp = gpar(fontsize = 2), 
+        row_names_gp = gpar(fontsize = 10),
+        bottom_annotation = h1, right_annotation = h2, 
+        heatmap_legend_param = list(direction = "horizontal"))
+
+draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom")
+```
+
+#### **Heatmap auc_mtx**
+
+```{r, message=FALSE, warning=FALSE}
+## Load and tidy data to plot: pvalues adjusted of regulons in DA [UP|DOWN]
+
+# Load metadata to name samples as experiments
+meta2 <- as.data.frame(read_csv(params$metadata.fn, col_names = T))
+if(params$celllines == 1){
+  meta2 <- meta2 %>% dplyr::select(ID,source)
+  meta2$source <- str_remove(meta2$source, "_treated")
+  meta2$source <- str_remove(meta2$source, "_infected")
+  meta2$source <- str_replace_all(meta2$source, "-", "")
+  meta2$source <- str_remove(meta2$source, "w_vector_expressing_")
+  meta2$source <- str_replace(meta2$source, "1hr_Ruxolitinib_pretreatment", "pt")
+}
+
+# Load and tidy data: adjusted pvalues, format
+auc_mtx.hm <- auc_mtx
+colnames(auc_mtx.hm) <- tfs
+
+# rearrange meta as in auc_mtx
+meta2 <- meta2[match(rownames(auc_mtx.hm),meta2$ID),]
+meta2$source_num <- paste0(meta2$source,"-",1:74)
+rownames(auc_mtx.hm) <- meta2$source_num
+paste0("using auc_mtx")
+```
+
+**Basic heatmap**
+
+Regulons that passed `Mann Whitney` and `Kolmogrov` Tests for Differential Activation with and `FDR Adjusted Pval of <= 0.2`. 
+
+```{r, message=FALSE, warning=FALSE}
+# # heatmap colors
+# max.auc = max(apply(auc_mtx, 1, max))
+# median.auc = summary(apply(auc_mtx, 1, sum)/length(colnames(auc_mtx)))[3]
+# min.auc = min(apply(auc_mtx, 1, min))
+# col_fun = colorRamp2(c(max.auc, median.auc, min.auc), c("red", "white", "steelblue1")) # red is cool, blue is bad pval
+
+# # retrieve regs/tfs in DA
+# selectedTFs <- selectTFs(tfs_per_exp_list = tfs_da_up[6:10])
+# # subset pvalues for selectedTFs
+# auc_mtx.hm <- as.matrix(auc_mtx.hm[,colnames(auc_mtx.hm) %in% selectedTFs])
+# Heatmap(auc_mtx.hm, name = "AUC", col = col_fun,
+#         column_title = "Per Experiment Upregulated Regulons",
+#         column_title_gp = gpar(fontsize = 10, fontface = "bold"), 
+#         column_names_gp = gpar(fontsize = 2), row_names_gp = gpar(fontsize = 5))
+```
+
+Heatmaps showing AUC values for the subset of regulons that were Differentially Activated - upregulated in SARS-CoV-2 infection experiments per cell line.
+
+**NHBE**
+
+```{r, message=FALSE, warning=FALSE}
+## NHBE
+# retrieve regs/tfs in DA
+selectedTFs <- selectTFs(tfs_per_exp_list = tfs_da_up[10])
+# subset pvalues for selectedTFs
+auc_mtx.hm.nhbe <- as.matrix(auc_mtx.hm[str_detect(rownames(auc_mtx.hm),"NHBE"), ## show nhbe experiments
+                                        colnames(auc_mtx.hm) %in% selectedTFs]) ## up regs sc2 nhbe
+max.auc = max(apply(auc_mtx.hm.nhbe, 1, max))
+median.auc = summary(apply(auc_mtx.hm.nhbe, 1, sum)/length(colnames(auc_mtx.hm.nhbe)))[3]
+min.auc = min(apply(auc_mtx.hm.nhbe, 1, min))
+col_fun = colorRamp2(c(max.auc, median.auc, min.auc), c("red", "white", "steelblue1")) # red is cool, blue is bad pval
+hm <- Heatmap(auc_mtx.hm.nhbe, name = "AUC", col = col_fun,
+        column_title = "NHBE SARS-CoV-2 infected Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 10, fontface = "bold"), column_names_rot = 45,
+        column_names_gp = gpar(fontsize = 5), row_names_gp = gpar(fontsize = 10))
+hm
+## save to png
+# png(paste0(params$outdir,"heatmap_upreg_nhbe.png"), width = 900, height = 600)
+# hm
+# dev.off()
+```
+
+```{r, message=FALSE, warning=FALSE}
+## Tf families annotation
+tf_fam_dbd <- family_annot(tfs_interest = colnames(auc_mtx.hm.nhbe))
+cols.tfs <- rainbow(n = length(unique(tf_fam_dbd$Family_Name))) # colors vector
+names(cols.tfs) <- unique(tf_fam_dbd$Family_Name)
+
+# rearrange matrix in TF family order
+auc_mtx.hm.nhbe <- auc_mtx.hm.nhbe[,match(tf_fam_dbd$TF_Name,colnames(auc_mtx.hm.nhbe))]
+
+## Celllines and infection annotation
+if(params$celllines==1){
+  # reorder experiments according to clustering
+  ## nhbe
+  order <- c(7,8,5,6,22,21,23,24,19,20,17,18,16,11,10,9,1,2,4,3,13,12,15,14)
+  auc_mtx.hm.cl <- auc_mtx.hm.nhbe[order,]
+  meta2.sub <- meta2[match(rownames(auc_mtx.hm.cl),meta2$source_num),] # order as in matrix
+  ## sc2 infected
+  sc2_infected <- rep("No",length(rownames(auc_mtx.hm.cl)))
+  sc2_infected[str_detect(meta2.sub$source,"SARSCoV2")] <- "Yes"
+  cols.sc2 <- RColorBrewer::brewer.pal(n=2, name = "Set3")
+  names(cols.sc2) <- unique(sc2_infected)
+  cols.sc2 <- cols.sc2[1:2]
+}
+
+## Plots
+
+# TF family annotation
+h1 <- HeatmapAnnotation(TF_family = tf_fam_dbd$Family_Name, col = list(TF_family = cols.tfs),
+                        annotation_name_side = "left", annotation_name_gp = gpar(fontsize = 9),
+                        annotation_legend_param = list(TF_family = list(direction = "horizontal", nrow = 3)))
+# experiment cell lines and treatment annotation
+h2 <- rowAnnotation(SARSCov2 = sc2_infected, annotation_name_gp = gpar(fontsize = 9),
+                        col = list(SARSCov2 = cols.sc2),
+                        annotation_legend_param = list(SARSCov2 = list(direction = "horizontal", nrow = 1)))
+## regs_heatmap_DA_[UP|DOWN]_tffam.png
+htmp <- Heatmap(auc_mtx.hm.cl, name = "AUC", cluster_columns = FALSE, col = col_fun,
+        column_title = "NHBE SARS-CoV-2 infected Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 12, fontface = "bold"), 
+        column_names_rot = 45, column_names_gp = gpar(fontsize = 3), 
+        row_names_gp = gpar(fontsize = 6),
+        bottom_annotation = h1, right_annotation = h2, 
+        heatmap_legend_param = list(direction = "horizontal"))
+
+draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom")
+
+## regs_heatmap_DA_[UP|DOWN]_tffam_tfclust.png
+htmp <- Heatmap(auc_mtx.hm.cl, name = "AUC", cluster_columns = TRUE, col = col_fun,
+        column_title = "NHBE SARS-CoV-2 infected Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 12, fontface = "bold"), 
+        column_names_rot = 45, column_names_gp = gpar(fontsize = 3), 
+        row_names_gp = gpar(fontsize = 6),
+        bottom_annotation = h1, right_annotation = h2, 
+        heatmap_legend_param = list(direction = "horizontal"))
+
+draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom")
+## save to png
+# png(paste0(params$outdir,"heatmap_upreg_nhbe_tfannot.png"), width = 900, height = 600)
+# draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+#     annotation_legend_side = "bottom")
+# dev.off()
+```
+
+**Calu3**
+
+```{r, message=FALSE, warning=FALSE}
+## Calu3
+selectedTFs <- selectTFs(tfs_per_exp_list = tfs_da_up[9])
+auc_mtx.hm.calu3 <- as.matrix(auc_mtx.hm[str_detect(rownames(auc_mtx.hm),"Calu3"), ## show nhbe experiments
+                                        colnames(auc_mtx.hm) %in% selectedTFs]) ## up regs sc2 nhbe
+## readjust colors
+max.auc = max(apply(auc_mtx.hm.calu3, 1, max))
+median.auc = summary(apply(auc_mtx.hm.calu3, 1, sum)/length(colnames(auc_mtx.hm.calu3)))[3]
+min.auc = min(apply(auc_mtx.hm.calu3, 1, min))
+col_fun = colorRamp2(c(max.auc, median.auc, min.auc), c("red", "white", "steelblue1")) # red is cool, blue is bad pval
+## Plot
+hm <- Heatmap(auc_mtx.hm.calu3, name = "AUC", col = col_fun,
+        column_title = "Calu3 SARS-CoV-2 infected Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 10, fontface = "bold"), column_names_rot = 45,
+        column_names_gp = gpar(fontsize = 3), row_names_gp = gpar(fontsize = 8))
+hm
+## save to png
+# png(paste0(params$outdir,"heatmap_upreg_calu3.png"), width = 900, height = 600)
+# hm
+# dev.off()
+```
+
+```{r, message=FALSE, warning=FALSE}
+## Tf families annotation
+tf_fam_dbd <- family_annot(tfs_interest = colnames(auc_mtx.hm.calu3))
+cols.tfs <- rainbow(n = length(unique(tf_fam_dbd$Family_Name))) # colors vector
+names(cols.tfs) <- unique(tf_fam_dbd$Family_Name)
+
+# rearrange matrix in TF family order
+auc_mtx.hm.calu3 <- auc_mtx.hm.calu3[,match(tf_fam_dbd$TF_Name,colnames(auc_mtx.hm.calu3))]
+
+## Celllines and infection annotation
+if(params$celllines==1){
+  # reorder experiments according to clustering
+  ## nhbe
+  order <- c(4:6,1,3,2)
+  auc_mtx.hm.cl <- auc_mtx.hm.calu3[order,]
+  meta2.sub <- meta2[match(rownames(auc_mtx.hm.cl),meta2$source_num),] # order as in matrix
+  ## sc2 infected
+  sc2_infected <- rep("No",length(rownames(auc_mtx.hm.cl)))
+  sc2_infected[str_detect(meta2.sub$source,"SARSCoV2")] <- "Yes"
+  cols.sc2 <- RColorBrewer::brewer.pal(n=2, name = "Set3")
+  names(cols.sc2) <- unique(sc2_infected)
+  cols.sc2 <- cols.sc2[1:2]
+}
+
+## Plots
+
+# TF family annotation
+h1 <- HeatmapAnnotation(TF_family = tf_fam_dbd$Family_Name, col = list(TF_family = cols.tfs),
+                        annotation_name_side = "left", annotation_name_gp = gpar(fontsize = 9),
+                        annotation_legend_param = list(TF_family = list(direction = "horizontal", nrow = 3)))
+# experiment cell lines and treatment annotation
+h2 <- rowAnnotation(SARSCov2 = sc2_infected, annotation_name_gp = gpar(fontsize = 9),
+                        col = list(SARSCov2 = cols.sc2),
+                        annotation_legend_param = list(SARSCov2 = list(direction = "horizontal", nrow = 1)))
+## regs_heatmap_DA_[UP|DOWN]_tffam.png
+htmp <- Heatmap(auc_mtx.hm.cl, name = "AUC", cluster_columns = FALSE, col = col_fun,
+        column_title = "Calu3 SARS-CoV-2 infected Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 12, fontface = "bold"), 
+        column_names_rot = 45, column_names_gp = gpar(fontsize = 3), 
+        row_names_gp = gpar(fontsize = 6),
+        bottom_annotation = h1, right_annotation = h2, 
+        heatmap_legend_param = list(direction = "horizontal"))
+
+draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom")
+
+## regs_heatmap_DA_[UP|DOWN]_tffam_tfclust.png
+htmp <- Heatmap(auc_mtx.hm.cl, name = "AUC", cluster_columns = TRUE, col = col_fun,
+        column_title = "Calu3 SARS-CoV-2 infected Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 12, fontface = "bold"), 
+        column_names_rot = 45, column_names_gp = gpar(fontsize = 3), 
+        row_names_gp = gpar(fontsize = 6),
+        bottom_annotation = h1, right_annotation = h2, 
+        heatmap_legend_param = list(direction = "horizontal"))
+
+draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom")
+## save to png
+# png(paste0(params$outdir,"heatmap_upreg_calu3_tfannot.png"), width = 900, height = 600)
+# draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+#     annotation_legend_side = "bottom")
+# dev.off()
+```
+
+**A549**
+
+```{r, message=FALSE, warning=FALSE}
+## A549
+selectedTFs <- selectTFs(tfs_per_exp_list = tfs_da_up[6:8])
+auc_mtx.hm.a549 <- as.matrix(auc_mtx.hm[str_detect(rownames(auc_mtx.hm),"A549"), ## show nhbe experiments
+                                        colnames(auc_mtx.hm) %in% selectedTFs]) ## up regs sc2 nhbe
+max.auc = max(apply(auc_mtx.hm.a549, 1, max))
+median.auc = summary(apply(auc_mtx.hm.a549, 1, sum)/length(colnames(auc_mtx.hm.a549)))[3]
+min.auc = min(apply(auc_mtx.hm.a549, 1, min))
+col_fun = colorRamp2(c(max.auc, median.auc, min.auc), c("red", "white", "steelblue1"))
+hm <- Heatmap(auc_mtx.hm.a549, name = "AUC", col = col_fun,
+        column_title = "A549 SARS-CoV-2 infected Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 10, fontface = "bold"), column_names_rot = 45,
+        column_names_gp = gpar(fontsize = 4), row_names_gp = gpar(fontsize = 8))
+hm
+## save to png
+# png(paste0(params$outdir,"heatmap_upreg_a549.png"), width = 900, height = 600)
+# hm
+# dev.off()
+```
+
+**TF family info**
+
+```{r, message=FALSE, warning=FALSE}
+## Tf families annotation
+tf_fam_dbd <- family_annot(tfs_interest = colnames(auc_mtx.hm.a549))
+cols.tfs <- rainbow(n = length(unique(tf_fam_dbd$Family_Name))) # colors vector
+names(cols.tfs) <- unique(tf_fam_dbd$Family_Name)
+
+# rearrange matrix in TF family order
+auc_mtx.hm.a549 <- auc_mtx.hm.a549[,match(tf_fam_dbd$TF_Name,colnames(auc_mtx.hm.a549))]
+
+## Celllines and infection annotation
+if(params$celllines==1){
+  # reorder experiments according to clustering
+  ## nhbe
+  
+  ## calu3
+  ## a549
+  order <- c(41,40,39,42:44,36:38,29,27,28,1,3,2,34,35,33,4,5,25,26,10,
+             9,30,32,31,6:8,18,15,14,17,13,11,12,20,21,19,23,24,22,16)
+  auc_mtx.hm.cl <- auc_mtx.hm.a549[order,]
+  meta2.sub <- meta2[match(rownames(auc_mtx.hm.cl),meta2$source_num),] # order as in matrix
+  ## sc2 infected
+  sc2_infected <- rep("No",length(rownames(auc_mtx.hm.cl)))
+  sc2_infected[str_detect(meta2.sub$source,"SARSCoV2")] <- "Yes"
+  cols.sc2 <- RColorBrewer::brewer.pal(n=2, name = "Set3")
+  names(cols.sc2) <- unique(sc2_infected)
+  cols.sc2 <- cols.sc2[1:2]
+}
+
+## Plots
+
+# TF family annotation
+h1 <- HeatmapAnnotation(TF_family = tf_fam_dbd$Family_Name, col = list(TF_family = cols.tfs),
+                        annotation_name_side = "left", annotation_name_gp = gpar(fontsize = 9),
+                        annotation_legend_param = list(TF_family = list(direction = "horizontal", nrow = 3)))
+# experiment cell lines and treatment annotation
+h2 <- rowAnnotation(SARSCov2 = sc2_infected, annotation_name_gp = gpar(fontsize = 9),
+                        col = list(SARSCov2 = cols.sc2),
+                        annotation_legend_param = list(SARSCov2 = list(direction = "horizontal", nrow = 1)))
+## regs_heatmap_DA_[UP|DOWN]_tffam.png
+htmp <- Heatmap(auc_mtx.hm.cl, name = "AUC", cluster_columns = FALSE, col = col_fun,
+        column_title = "A549 SARS-CoV-2 infected Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 12, fontface = "bold"), 
+        column_names_rot = 45, column_names_gp = gpar(fontsize = 3), 
+        row_names_gp = gpar(fontsize = 6),
+        bottom_annotation = h1, right_annotation = h2, 
+        heatmap_legend_param = list(direction = "horizontal"))
+
+draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom")
+
+## regs_heatmap_DA_[UP|DOWN]_tffam_tfclust.png
+htmp <- Heatmap(auc_mtx.hm.cl, name = "AUC", cluster_columns = TRUE, col = col_fun,
+        column_title = "A549 SARS-CoV-2 infected Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 12, fontface = "bold"), 
+        column_names_rot = 45, column_names_gp = gpar(fontsize = 3), 
+        row_names_gp = gpar(fontsize = 6),
+        bottom_annotation = h1, right_annotation = h2, 
+        heatmap_legend_param = list(direction = "horizontal"))
+
+draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom")
+## save to png
+png(paste0(params$outdir,"heatmap_upreg_a549_tfannot.png"), width = 900, height = 600)
+draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom")
+dev.off()
+```
+
+#### **GO Enrichment Analysis**
+
+```{r, message=FALSE, warning=FALSE}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+
+# Load and tidy data: regulons/tfs that were in DA + enriched 
+# Store all genes from all upregulated regulons per experiment to search for enriched terms
+regs_genes_per_exp <- regsGenesPerExp(tfs_per_exp_list = tfs_da_up, tfs_targets = tfs_targets, entrezids = T)
+```
+
+Number of genes in all regulons per experiment
+
+```{r, message=FALSE, warning=FALSE}
+# number of genes in all regulons per experiment
+t(as.data.frame(lapply(regs_genes_per_exp, length)))
+```
+
+GO:BP analysis
+
+```{r, message=FALSE, warning=FALSE}
+# Perform GO Enrichment Analysis on regulons per experiment case
+# BP Biological Process, CC Cellular Component, MF Molecular Functions
+ego_perexp_da <- list()
+i <- 1
+for (regs in regs_genes_per_exp) {
+  ego <- enrichGO(gene = regs, universe = genes_universe, #  change
+                OrgDb = org.Hs.eg.db, ont = "BP", pAdjustMethod = "BH", pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05, readable = TRUE)
+  ego_perexp_da[i] <- list(ego)
+  i=i+1
+}
+names(ego_perexp_da) <- names(regs_genes_per_exp)
+# ego_perexp_da <- ego_perexp_da[-which(t(as.data.frame(lapply(ego_perexp_da, is.na))))]
+
+## Generate Dotplots iteratively
+plots <- iterDotplot(ego_perexp_da, db = "GO:BP", savepngs = F, outdir = params$outdir, test_name = "upregulated")
+# names(plots) <- names(ego_perexp_da)
+plots
+# if(params$celllines==1){
+#   # display plots together
+#   p <- ggarrange(plots[[1]],plots[[2]],plots[[3]], ncol = 3, nrow = 1)
+#   annotate_figure(p, top = text_grob("GO:BP Enriched Terms in Upregulated TFs",face = "bold", size = 14))
+#   p <- ggarrange(plots[[4]],plots[[5]], plots[[11]], ncol = 3, nrow = 1)
+#   annotate_figure(p, top = text_grob("GO:BP Enriched Terms in Upregulated TFs",face = "bold", size = 14))
+#   p <- ggarrange(plots[[6]],plots[[7]],ncol = 2, nrow = 1)
+#   annotate_figure(p, top = text_grob("GO:BP Enriched Terms in Upregulated TFs",face = "bold", size = 14))
+#   p <- ggarrange(plots[[8]],plots[[10]],ncol = 2, nrow = 1)
+#   annotate_figure(p, top = text_grob("GO:BP Enriched Terms in Upregulated TFs",face = "bold", size = 14))
+# }
+```
+
+#### **KEGG Enrichment Analysis**
+
+```{r, message=FALSE, warning=FALSE, eval=FALSE}
+# Perform KEGG Pathway over-representation Analysis on regulons per experiment case
+kk_perexp_da <- list()
+i <- 1
+for (regs in regs_genes_per_exp) {
+  kk <- enrichKEGG(gene = regs, organism = 'hsa', pvalueCutoff = 0.05, 
+                    pAdjustMethod = "BH", universe = genes_universe)
+  kk_perexp_da[i] <- list(kk)
+  i=i+1
+}
+names(kk_perexp_da) <- names(regs_genes_per_exp)
+
+## Generate Dotplots iteratively
+plots <- iterDotplot(kk_perexp_da, db = "KEGG", savepngs = F, outdir = params$outdir, test_name = "upregulated")
+# names(plots) <- names(ego_perexp_da)
+plots
+```
+
+
+#### **Enrichment Analysis per Regulon**
+
+##### **GO:BO**
+
+Perform Enrichment Analysis runs for all regulons (tfs and target genes)
+
+```{r, message=FALSE, warning=FALSE, eval=FALSE}
+# Perform GO Enrichment Analysis on individual regulons
+# BP Biological Process, CC Cellular Component, MF Molecular Functions
+ego_per_regulon <- list()
+for (tf in names(tfs_targets)) {
+  regulon <- unique(c(str_remove(tf,"_\\(\\+\\)"), tfs_targets[[tf]]))
+  ego <- enrichGO(gene = regulon, universe = genes_universe.df$SYMBOL, keyType = "SYMBOL",
+                OrgDb = org.Hs.eg.db, ont = "BP", pAdjustMethod = "BH", 
+                pvalueCutoff  = 0.01, qvalueCutoff  = 0.05, readable = TRUE)
+  ego_per_regulon[[tf]] <- ego
+}
+```
+
+Number of regulons for which at least one enriched term was found:
+
+```{r, message=FALSE, warning=FALSE}
+
+```
+
+
+For each experiment, take GOEA of each regulon and make a cloudplot of the terms:
+
+```{r, message=FALSE, warning=FALSE, eval=FALSE}
+# For each experiment, take GOEA of each regulon and make a cloudplot of the terms:
+plots_per_exp <- list()
+for (exp in names(tfs_per_exp_list)) {
+  # Store ego enriched terms per regulon
+  terms_perexp <- c()
+  for (tf in names(tfs_per_exp_list[[exp]])) {
+    # take top n enriched terms per regulon of experiment
+    enriched_terms <- as.data.frame(ego_per_regulon[[tf]])[,2]
+    enriched_terms <- str_replace_all(enriched_terms," ","_")
+    if(length(enriched_terms) > n){
+      enriched_terms <- enriched_terms[1:n]
+    }
+    terms_perexp <- c(terms_perexp, enriched_terms)
+    wordcloud(terms_perexp, max.words = 1, 
+                                    colors = RColorBrewer::brewer.pal(1,name = "Paired"))
+  }
+  plots_per_exp[[exp]] <- wordcloud(terms_perexp, max.words = 1, 
+                                    colors = RColorBrewer::brewer.pal(1,name = "Paired"))
+}
+```
+
+##### **KEGG**
+
+### **Plots: DA+enrichment Regulon Selection**
+
+#### **Upset Plot**
+
+##### **Upregulated Regulons**
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ComplexHeatmap)
+library(RColorBrewer)
+
+# Load and tidy data: regulons/tfs that were in DA + enriched 
+# tfs_da_enrich
+
+## Upset Plot
+# subset for experiments that had intersections with other experiments, also plot only intersections >=2
+#m <- make_comb_mat(lfc[names(lfc) %in% has.intersections], mode = "intersect")
+m <- make_comb_mat(tfs_da_enrich_up, mode = "distinct")
+#m <- m[comb_degree(m) >= 2]
+ss = set_size(m)
+cs = comb_size(m)
+ht = UpSet(m, 
+    set_order = order(ss),
+    comb_order = order(comb_degree(m), -cs),
+    top_annotation = HeatmapAnnotation(
+        "Regulons Intersection" = anno_barplot(cs, 
+            ylim = c(0, max(cs)*1.1),
+            border = FALSE, 
+            gp = gpar(fill = "black"), 
+            height = unit(4, "cm")
+        ), 
+        annotation_name_side = "left", 
+        annotation_name_rot = 90),
+    left_annotation = rowAnnotation(
+        "# Regulons" = anno_barplot(-ss, 
+            baseline = 0,
+            border = FALSE, 
+            gp = gpar(fill = "black"), 
+            width = unit(4, "cm")
+        ),
+        set_name = anno_text(set_name(m), 
+            location = 0.5, 
+            just = "center",
+            width = max_text_width(set_name(m)) + unit(4, "mm"))
+    ), 
+    right_annotation = NULL,
+    show_row_names = FALSE,
+    pt_size = unit(5, "mm"), 
+    lwd = 3,
+    comb_col = RColorBrewer::brewer.pal(n = max(comb_degree(m)), name = "Set1")[comb_degree(m)]
+    )
+ht = draw(ht)
+od = column_order(ht)
+decorate_annotation("Regulons Intersection", {
+    grid.text(cs[od], x = seq_along(cs), y = unit(cs[od], "native") + unit(2, "pt"), 
+        default.units = "native", just = c("left", "bottom"), 
+        gp = gpar(fontsize = 11, col = "#404040"), rot = 45)
+})
+# ## save to png
+# png(paste0(params$outdir,"upset_upregulated_enrich.png"), width = 1000, height = 600)
+# ht = draw(ht)
+# od = column_order(ht)
+# decorate_annotation("Regulons Intersection", {
+#     grid.text(cs[od], x = seq_along(cs), y = unit(cs[od], "native") + unit(2, "pt"), 
+#         default.units = "native", just = c("left", "bottom"), 
+#         gp = gpar(fontsize = 11, col = "#404040"), rot = 45)
+# })
+# dev.off()
+```
+
+Pairwise comparison of shared regulons, distinctly shared regulons are shown in the next table:
+
+```{r, message=FALSE, warning=FALSE}
+tableCommonDistinct <- distinctlySharedRegs(tfs_per_exp_list = tfs_da_enrich_up)
+View(tableCommonDistinct)
+# save table
+# write_csv(tableCommonDistinct,
+#           file = paste0(params$outdir,"tableDistinctlySharedRegulons_up-enrich.csv"), col_names = T)
+
+## subset for SARS-CoV-2 infected experiments
+tabledown.sc2 <- tableCommonDistinct %>% 
+  dplyr::select(6:10) %>% dplyr::slice(6:10)
+View(tabledown.sc2)
+# save table
+# write_csv(tabledown.sc2,
+#           file = paste0(params$outdir,"tableDistinctlySharedRegulons_down-enrich_subSC2.csv"), col_names = T)
+```
+
+Regulons that are only present in SARS-CoV-2 infection samples:
+
+```{r, message=FALSE, warning=FALSE}
+getDistinct(tfs_per_exp_list = tfs_da_enrich_up, indexInterestGroup = 6:10)
+```
+
+##### **Downregulated Regulons**
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ComplexHeatmap)
+library(RColorBrewer)
+
+# Load and tidy data: regulons/tfs that were in DA + enriched 
+# tfs_da_enrich
+
+## Upset Plot
+# subset for experiments that had intersections with other experiments, also plot only intersections >=2
+#m <- make_comb_mat(lfc[names(lfc) %in% has.intersections], mode = "intersect")
+m <- make_comb_mat(tfs_da_enrich_down, mode = "distinct")
+#m <- m[comb_degree(m) >= 2]
+ss = set_size(m)
+cs = comb_size(m)
+ht = UpSet(m, 
+    set_order = order(ss),
+    comb_order = order(comb_degree(m), -cs),
+    top_annotation = HeatmapAnnotation(
+        "Regulons Intersection" = anno_barplot(cs, 
+            ylim = c(0, max(cs)*1.1),
+            border = FALSE, 
+            gp = gpar(fill = "black"), 
+            height = unit(4, "cm")
+        ), 
+        annotation_name_side = "left", 
+        annotation_name_rot = 90),
+    left_annotation = rowAnnotation(
+        "# Regulons" = anno_barplot(-ss, 
+            baseline = 0,
+            border = FALSE, 
+            gp = gpar(fill = "black"), 
+            width = unit(4, "cm")
+        ),
+        set_name = anno_text(set_name(m), 
+            location = 0.5, 
+            just = "center",
+            width = max_text_width(set_name(m)) + unit(4, "mm"))
+    ), 
+    right_annotation = NULL,
+    show_row_names = FALSE,
+    pt_size = unit(5, "mm"), 
+    lwd = 3,
+    comb_col = RColorBrewer::brewer.pal(n = max(comb_degree(m)), name = "Set1")[comb_degree(m)]
+    )
+ht = draw(ht)
+od = column_order(ht)
+decorate_annotation("Regulons Intersection", {
+    grid.text(cs[od], x = seq_along(cs), y = unit(cs[od], "native") + unit(2, "pt"), 
+        default.units = "native", just = c("left", "bottom"), 
+        gp = gpar(fontsize = 11, col = "#404040"), rot = 45)
+})
+# ## save to png
+# png(paste0(params$outdir,"upset_downregulated_enrich.png"), width = 1000, height = 600)
+# ht = draw(ht)
+# od = column_order(ht)
+# decorate_annotation("Regulons Intersection", {
+#     grid.text(cs[od], x = seq_along(cs), y = unit(cs[od], "native") + unit(2, "pt"),
+#         default.units = "native", just = c("left", "bottom"),
+#         gp = gpar(fontsize = 11, col = "#404040"), rot = 45)
+# })
+# dev.off()
+```
+
+Pairwise comparison of shared regulons, distinctly shared regulons are shown in the next table:
+
+```{r, message=FALSE, warning=FALSE}
+tabledown <- distinctlySharedRegs(tfs_per_exp_list = tfs_da_enrich_down)
+tabledown
+# # save table
+# write_csv(tabledown,
+#           file = paste0(params$outdir,"tableDistinctlySharedRegulons_down-enrich.csv"), col_names = T)
+```
+
+Regulons that are only present in SARS-CoV-2 infection samples:
+
+```{r, message=FALSE, warning=FALSE}
+getDistinct(tfs_per_exp_list = tfs_da_enrich_down, indexInterestGroup = 6:10)
+```
+
+#### **Heatmap**
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ComplexHeatmap)
+library(circlize)
+
+## Load and tidy data
+rss <- as.data.frame(read_csv(paste0(params$inputdir,params$RSS.fn), col_names = T))
+rss <- column_to_rownames(rss, var="...1")
+rownames(rss) <- str_remove(rownames(rss),"_\\(\\+\\)")
+colnames(rss) <- str_remove(colnames(rss), "[YN]$")
+if(params$celllines==1){
+  colnames(rss) <- str_replace_all(colnames(rss), "-", "")
+  colnames(rss) <- str_replace(colnames(rss), "w_vector_expressing_", "")
+  colnames(rss) <- str_replace(colnames(rss), "1hr_Ruxolitinib_pretreatment", "pt")
+}
+rss <- t(as.matrix(rss))
+rss <- rss[,-(which(is.na(apply(rss, 2, sum))))] ## remove tfs with nas
+
+# Load and tidy data: regulons/tfs that were in DA + enriched 
+## Subset for tfs that were in DA and were enriched in SARSCoV2 experiments
+selectedTFsUpLFC <- selectTFs(tfs_per_exp_list = tfs_da_enrich_up[6:10])
+rssUp <- rss[,match(selectedTFsUpLFC, colnames(rss))]
+
+## down
+selectedTFsDownLFC <- selectTFs(tfs_per_exp_list = tfs_da_enrich_down[6:10])
+rssDown <- rss[,match(selectedTFsDownLFC, colnames(rss))]
+```
+
+**Basic heatmap**
+
+```{r, message=FALSE, warning=FALSE}
+## Plot
+Heatmap(rssUp, name = "RSS", 
+        column_title = "Per Experiment Most Enriched Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 10, fontface = "bold"), column_names_rot = 45,
+        column_names_gp = gpar(fontsize = 5), row_names_gp = gpar(fontsize = 10))
+```
+
+**Annotating TFs by families**
+
+
+
+```{r, message=FALSE, warning=FALSE}
+## TF Family annotation
+tf_fam_dbd <- family_annot(tfs_interest = colnames(rssUp))
+cols.tfs <- rainbow(n = length(unique(tf_fam_dbd$Family_Name))) # colors vector
+names(cols.tfs) <- unique(tf_fam_dbd$Family_Name)
+# rearrange matrix in tf fam order
+rssUp <- rssUp[,match(tf_fam_dbd$TF_Name,colnames(rssUp))]
+
+## highlight immune related tfs
+immune.tfs <- rep("No",length(selectedTFsUpLFC))
+immune.tfs[tf_fam_dbd$Family_Name %in% 
+             c("Ets","GATA","IRF","Rel","RFX","SMAD","STAT","ARID/BRIGHT","HSF","p53")] <- "Yes"
+cols.tfsi <- c("#c51b7d","#7fbc41") # colors vector
+names(cols.tfsi) <- c("Yes","No")
+
+
+
+# reorder experiments in matrix by clustering order
+# if(params$sub_cases_rss_plots == 1){
+#   exp.sorted <- rownames(rss)[order(rownames(rss))]
+#   rss <- rss[match(exp.sorted,rownames(rss)),]
+#   if(params$celllines == 1){
+#     order <- c(2,5,4,10,7,8,9,1,6,11,3)
+#     rss <- rss[order,]
+#   }
+# }
+order <- c(3,14,13,1,12,5,11,4,7,10,8,15,2,6,9)
+rssUp <- rssUp[order,]
+
+## Celllines and infection annotation
+if(params$celllines==1){
+  ## sc2 infected
+  sc2_infected <- rep("No",length(rownames(rssUp)))
+  sc2_infected[str_detect(rownames(rssUp),"SARSCoV2")] <- "Yes"
+  cols.sc2 <- RColorBrewer::brewer.pal(n=2, name = "Set3")
+  names(cols.sc2) <- unique(sc2_infected)
+  cols.sc2 <- cols.sc2[1:2]
+}
+
+# heatmap colors
+# col_fun = colorRamp2(c(0, 0.2, 0.23, 0.4), c("blue", "white","indianred1", "red3"))
+## plot RSS metric colors
+max.rss = max(apply(rssUp, 1, max))
+firstqrt.rss = mean(apply(rssUp, 1, summary)[2,])
+thirdqrt.rss = mean(apply(rssUp, 1, summary)[5,])
+mean.rss = mean(apply(rssUp, 1, summary)[3,])
+#min.rss = min(apply(rssUp, 1, min))
+col_fun = colorRamp2(c(0.4, thirdqrt.rss, firstqrt.rss, 0), c("red3", "indianred1", "white", "blue"))
+
+## Plot
+h1 <- HeatmapAnnotation(TF_family = tf_fam_dbd$Family_Name, Immune_TF = immune.tfs,
+                        col = list(TF_family = cols.tfs, Immune_TF = cols.tfsi),
+                        annotation_name_side = "left",
+                        annotation_legend_param = 
+                          list(TF_family = list(direction = "horizontal", nrow = 3),
+                               Immune_TF = list(direction = "horizontal", nrow = 1)))
+# h2 <- rowAnnotation(Cell_line = cell.lines, Treatment = treatment,
+#                         col = list(Cell_line = cols.cells, Treatment = cols.trtm),
+#                         annotation_legend_param = list(Cell_line = list(direction = "horizontal", nrow = 1),
+#                                                        Treatment = list(direction = "horizontal", nrow = 1)))
+h2 <- rowAnnotation(SARSCov2 = sc2_infected, annotation_name_gp = gpar(fontsize = 9),
+                        col = list(SARSCov2 = cols.sc2),
+                        annotation_legend_param = list(SARSCov2 = list(direction = "horizontal", nrow = 1)))
+htmp <- Heatmap(rssUp, name = "RSS", cluster_columns = FALSE, col = col_fun,
+        column_title = "Per Experiment Most Enriched Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 15, fontface = "bold"), 
+        column_names_rot = 45, column_names_gp = gpar(fontsize = 5), 
+        row_names_gp = gpar(fontsize = 9),
+        bottom_annotation = h1, right_annotation = h2, 
+        heatmap_legend_param = list(direction = "horizontal"))
+
+draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom")
+## save to png
+# png(paste0(params$outdir,"heatmap_upreg_enrich_tfannot_notfclust.png"), width = 900, height = 600)
+# draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+#     annotation_legend_side = "bottom")
+# dev.off()
+
+# cluster TFs 
+htmp <- Heatmap(rssUp, name = "RSS", cluster_columns = TRUE, col = col_fun,
+        column_title = "Per Experiment Most Enriched Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 15, fontface = "bold"), 
+        column_names_rot = 45, column_names_gp = gpar(fontsize = 5), 
+        row_names_gp = gpar(fontsize = 9),
+        bottom_annotation = h1, right_annotation = h2, 
+        heatmap_legend_param = list(direction = "horizontal"))
+
+draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom")
+## save to png
+# png(paste0(params$outdir,"heatmap_upreg_enrich_tfannot_tfclust.png"), width = 900, height = 600)
+# draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+#     annotation_legend_side = "bottom")
+# dev.off()
+```
+
+Heatmap only showing infected or treated samples:
+
+```{r, message=FALSE, warning=FALSE}
+## removing controls
+rssUp.nc <- rssUp[str_detect(rownames(rssUp),"Mock")==F,]
+## sc2 infected bar
+sc2_infected <- rep("No",length(rownames(rssUp.nc)))
+sc2_infected[str_detect(rownames(rssUp.nc),"SARSCoV2")] <- "Yes"
+cols.sc2 <- RColorBrewer::brewer.pal(n=2, name = "Set3")
+names(cols.sc2) <- unique(sc2_infected)
+cols.sc2 <- cols.sc2[1:2]
+## Plot
+h2 <- rowAnnotation(SARSCov2 = sc2_infected, annotation_name_gp = gpar(fontsize = 9),
+                        col = list(SARSCov2 = cols.sc2),
+                        annotation_legend_param = list(SARSCov2 = list(direction = "horizontal", nrow = 1)))
+# cluster TFs 
+htmp <- Heatmap(rssUp.nc, name = "RSS", cluster_columns = TRUE, col = col_fun,
+        column_title = "Per Experiment Most Enriched Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 15, fontface = "bold"), 
+        column_names_rot = 45, column_names_gp = gpar(fontsize = 3), 
+        row_names_gp = gpar(fontsize = 8),
+        bottom_annotation = h1, right_annotation = h2, 
+        heatmap_legend_param = list(direction = "horizontal"))
+
+draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom")
+# ## save to png
+# png(paste0(params$outdir,"heatmap_upreg_enrich_tfannot_tfclust_subInf.png"), width = 900, height = 600)
+# draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+#     annotation_legend_side = "bottom")
+# dev.off()
+```
+
+removing Calu3 DA + enriched regulons
+
+```{r, message=FALSE, warning=FALSE}
+selectedTFsUpLFC <- selectTFs(tfs_per_exp_list = tfs_da_enrich_up[c(6:8,10)])
+rssUp.nc2 <- rssUp.nc[,match(selectedTFsUpLFC, colnames(rssUp.nc))]
+## TF Family annotation
+tf_fam_dbd <- family_annot(tfs_interest = colnames(rssUp.nc2))
+cols.tfs <- rainbow(n = length(unique(tf_fam_dbd$Family_Name))) # colors vector
+names(cols.tfs) <- unique(tf_fam_dbd$Family_Name)
+# rearrange matrix in tf fam order
+rssUp.nc2 <- rssUp.nc2[,match(tf_fam_dbd$TF_Name,colnames(rssUp.nc2))]
+
+## highlight immune related tfs
+immune.tfs <- rep("No",length(selectedTFsUpLFC))
+immune.tfs[tf_fam_dbd$Family_Name %in% 
+             c("Ets","GATA","IRF","Rel","RFX","SMAD","STAT","ARID/BRIGHT","HSF","p53")] <- "Yes"
+cols.tfsi <- c("#c51b7d","#7fbc41") # colors vector
+names(cols.tfsi) <- c("Yes","No")
+## Plot
+h1 <- HeatmapAnnotation(TF_family = tf_fam_dbd$Family_Name, Immune_TF = immune.tfs,
+                        col = list(TF_family = cols.tfs, Immune_TF = cols.tfsi),
+                        annotation_name_side = "left",
+                        annotation_legend_param = 
+                          list(TF_family = list(direction = "horizontal", nrow = 3),
+                               Immune_TF = list(direction = "horizontal", nrow = 1)))
+# cluster TFs 
+htmp <- Heatmap(rssUp.nc2, name = "RSS", cluster_columns = TRUE, col = col_fun,
+        column_title = "Per Experiment Most Enriched Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 15, fontface = "bold"), 
+        column_names_rot = 45, column_names_gp = gpar(fontsize = 10), 
+        row_names_gp = gpar(fontsize = 10),
+        bottom_annotation = h1, right_annotation = h2, 
+        heatmap_legend_param = list(direction = "horizontal"))
+
+draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom")
+## save to png
+# png(paste0(params$outdir,"heatmap_upreg_enrich_tfannot_tfclust_subInf_nosc2calu3regs.png"), width = 900, height = 400)
+# draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom",
+#     annotation_legend_side = "bottom")
+# dev.off()
+```
+
+Only show Calu3 SARS-CoV-2 regulons
+
+```{r, message=FALSE, warning=FALSE}
+selectedTFsUpLFC <- selectTFs(tfs_per_exp_list = tfs_da_enrich_up[9])
+rssUp.nc3 <- rssUp.nc[,match(selectedTFsUpLFC, colnames(rssUp.nc))]
+## TF Family annotation
+tf_fam_dbd <- family_annot(tfs_interest = colnames(rssUp.nc3))
+cols.tfs <- rainbow(n = length(unique(tf_fam_dbd$Family_Name))) # colors vector
+names(cols.tfs) <- unique(tf_fam_dbd$Family_Name)
+# rearrange matrix in tf fam order
+rssUp.nc3 <- rssUp.nc3[,match(tf_fam_dbd$TF_Name,colnames(rssUp.nc3))]
+
+## highlight immune related tfs
+immune.tfs <- rep("No",length(selectedTFsUpLFC))
+immune.tfs[tf_fam_dbd$Family_Name %in% 
+             c("Ets","GATA","IRF","Rel","RFX","SMAD","STAT","ARID/BRIGHT","HSF","p53")] <- "Yes"
+cols.tfsi <- c("#c51b7d","#7fbc41") # colors vector
+names(cols.tfsi) <- c("Yes","No")
+# change experiment names
+rownames(rssUp.nc3) <- str_remove(rownames(rssUp.nc3), "_infected")
+rownames(rssUp.nc3) <- str_remove(rownames(rssUp.nc3), "_treated")
+## Plot
+h1 <- HeatmapAnnotation(TF_family = tf_fam_dbd$Family_Name, Immune_TF = immune.tfs,
+                        col = list(TF_family = cols.tfs, Immune_TF = cols.tfsi),
+                        annotation_name_side = "left",
+                        annotation_legend_param = 
+                          list(TF_family = list(direction = "horizontal", nrow = 3),
+                               Immune_TF = list(direction = "horizontal", nrow = 1)))
+# cluster TFs 
+htmp <- Heatmap(rssUp.nc3, name = "RSS", cluster_columns = TRUE, col = col_fun,
+        column_title = "Per Experiment Most Enriched Upregulated Regulons",
+        column_title_gp = gpar(fontsize = 15, fontface = "bold"), 
+        column_names_gp = gpar(fontsize = 6), 
+        row_names_gp = gpar(fontsize = 5),
+        bottom_annotation = h1, right_annotation = h2, 
+        heatmap_legend_param = list(direction = "horizontal"))
+
+draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom", 
+    annotation_legend_side = "bottom")
+# ## save to png
+# png(paste0(params$outdir,"heatmap_upreg_enrich_tfannot_tfclust_subInf_sc2calu3regs.png"), width = 1000, height = 600)
+# draw(htmp, merge_legend = TRUE, heatmap_legend_side = "bottom",
+#     annotation_legend_side = "bottom")
+# dev.off()
+```
+
+#### **GO Term Enrichment Analysis**
+
+```{r, message=FALSE, warning=FALSE}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+
+# Load and tidy data: regulons/tfs that were in DA + enriched 
+# Store all genes from all upregulated regulons per experiment to search for enriched terms
+regs_genes_per_exp <- regsGenesPerExp(tfs_per_exp_list = tfs_da_enrich_up, tfs_targets = tfs_targets, entrezids = T)
+```
+
+Number of genes in all regulons per experiment
+
+```{r, message=FALSE, warning=FALSE}
+# number of genes in all regulons per experiment
+t(as.data.frame(lapply(regs_genes_per_exp, length)))
+```
+
+```{r, message=FALSE, warning=FALSE}
+# Perform GO Enrichment Analysis on regulons per experiment case
+# BP Biological Process, CC Cellular Component, MF Molecular Functions
+ego_perexp_da <- list()
+i <- 1
+for (regs in regs_genes_per_exp) {
+  ego <- enrichGO(gene = regs, universe = genes_universe, #  change
+                OrgDb = org.Hs.eg.db, ont = "BP", pAdjustMethod = "BH", pvalueCutoff  = 0.01,
+                qvalueCutoff  = 0.05, readable = TRUE)
+  ego_perexp_da[i] <- list(ego)
+  i=i+1
+}
+names(ego_perexp_da) <- names(regs_genes_per_exp)
+
+## Generate Dotplots iteratively
+plots <- iterDotplot(ego_perexp_da, db = "GO:BP", savepngs = F, outdir = params$outdir, test_name = "upregulated-rss")
+plots
+# if(params$celllines==1){
+#   # display plots together
+#   p <- ggarrange(plots$IAVdNS1_infected_NHBE,plots$human_IFNB_treated_NHBE, ncol = 2, nrow = 1)
+#   annotate_figure(p, top = text_grob("GO:BP Enriched Terms in Upregulated+Enriched Regulons",
+#                                      face = "bold", size = 14))
+#   p <- ggarrange(plots$SARSCoV2_infected_A549_hACE2,plots$SARSCoV2_infected_A549_hACE2_pt, 
+#                  plots$SARSCoV2_infected_Calu3,ncol = 3, nrow = 1)
+#   annotate_figure(p, top = text_grob("GO:BP Enriched Terms in Upregulated+Enriched Regulons",
+#                                      face = "bold", size = 14))
+# }
+```
+
+#### **KEGG Enrichment Analysis**
+
+```{r, message=FALSE, warning=FALSE, eval=FALSE}
+# Perform KEGG Pathway over-representation Analysis on regulons per experiment case
+kk_perexp_da <- list()
+i <- 1
+for (regs in regs_genes_per_exp) {
+  kk <- enrichKEGG(gene = regs, organism = 'hsa', pvalueCutoff = 0.05, 
+                    pAdjustMethod = "BH", universe = genes_universe)
+  kk_perexp_da[i] <- list(kk)
+  i=i+1
+}
+names(kk_perexp_da) <- names(regs_genes_per_exp)
+
+## Generate Dotplots iteratively
+plots <- iterDotplot(kk_perexp_da, db = "KEGG", savepngs = F, outdir = params$outdir, test_name = "upregulated-rss")
+plots
+```
+
+
+#### **Disease Ontology Enrichment Analysis**
+
+DOSE supports enrichment analysis of Disease Ontology (DO) (Schriml et al. 2011), Network of Cancer Gene (A. et al. 2016) and Disease Gene Network (DisGeNET) (Janet et al. 2015).
+
+```{r,message=FALSE, warning=FALSE}
+library(DOSE)
+# Perform Disease Enrichment Analysis qith only the tfs (no target genes) per experiment case
+edo_perexp_da <- list()
+i <- 1
+for (regs in regs_genes_per_exp) {
+  edo <- enrichDO(gene = regs, pvalueCutoff = 0.1, ont = "DO",
+                    pAdjustMethod = "BH", universe = genes_universe)
+  edo_perexp_da[i] <- list(edo)
+  i=i+1
+}
+names(edo_perexp_da) <- names(regs_genes_per_exp)
+
+## Generate Dotplots iteratively
+plots <- iterDotplot(edo_perexp_da, db = "DO", savepngs = T, outdir = params$outdir, test_name = "upregulated-rss")
+plots
+```
+
+
+### **References**
+
+
+[1] https://www.cienciadedatos.net/documentos/19b_comparaciones_multiples_correccion_p-value_fdr
+
+[2] https://yulab-smu.top/biomedical-knowledge-mining-book/clusterprofiler-go.html
+
+```{r}
+sessionInfo()
+```
+
